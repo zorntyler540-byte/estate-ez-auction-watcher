@@ -1,0 +1,70 @@
+CTBIDS SALE TOOLS
+=================
+
+PREFERRED: use the combined suite
+  Double-click run_suite.bat
+  (tabs: Live Watch + Reports)
+
+Or run tools separately:
+  - Reports only:  python app.py
+  - Watch only:    sale_watcher\run_watcher.bat
+
+See HOW TO USE SUITE.txt for the combined app.
+See sale_watcher\HOW TO WATCH.txt for watcher details.
+
+---
+
+SALE REPORT GENERATOR (Reports tab / app.py)
+-------------------------------------------
+Turn a CTBids sale CSV into boss + client reports.
+
+1. Export CSV from CTBids (sale-history or active-sale).
+2. Open Reports (suite tab or python app.py).
+3. Choose CSV + output folder, Generate.
+
+Active-sale CSV → mid-sale boss summary (hammer feel,
+    top bidders, SKU groups, and items that need attention).
+End-of-sale CSV → internal + per-client reports.
+
+Backups of the old separate apps:
+  backups\separated_YYYY-MM-DD\
+CTBIDS SALE SUITE
+=================
+
+For Caring Transitions / CTBids franchise owners.
+
+One window, two tabs:
+  - Live Watch  = mid-sale bids, usernames, Suspended / Unpaid / Paid, PDF
+  - Reports     = sale-history or active-sale CSV → HTML / Excel / PDF
+
+IF YOU RECEIVED THE ZIP
+-----------------------
+1. Extract the zip to a folder.
+2. Edit config.json → set your franchise business_name.
+3. Double-click  Estate-Ez Auction Watcher.exe
+4. See HOW TO INSTALL.txt if SmartScreen blocks the first run.
+
+LIVE WATCH
+----------
+1. Paste sale URL (https://ctbids.com/estate-sale/#####)
+2. Buyer sign in  (ctbids.com) — usernames + Suspended
+3. Seller sign in (seller.ctbids.com) — paid / unpaid counts
+4. Start watching
+5. Leave it running — it saves each lot's high bid as it closes, then a
+   final CSV/HTML/PDF when the sale ends (Documents\Sale Reports\Live Snapshots).
+   The PDF is grouped by SKU prefix (sold / not sold, high bid vs reserve).
+6. Live Watch shows Price, Reserve, and Met (Yes/No) on each lot.
+7. Export PDF anytime — same SKU-prefix layout
+
+REPORTS
+-------
+1. Download sale-history CSV from CTBids (end of sale), or active-sale CSV
+2. Reports tab → choose CSV → choose output folder
+3. Generate Reports  (each run makes a new dated subfolder so files are not overwritten)
+Empty prefixes in config.json = auto-find SKU groups (MS, NK, SA, …)
+
+TO BUILD / SHARE A NEW ZIP (developer PC)
+-----------------------------------------
+Double-click build_suite.bat
+Send:  dist\CTBids-Sale-Suite.zip
+That zip uses a blank franchise config (not one city’s name).

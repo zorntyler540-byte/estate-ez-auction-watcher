@@ -1,0 +1,53 @@
+CTBIDS SALE WATCHER
+===================
+
+WHAT IT DOES
+------------
+Watches your live CTBids sale and shows:
+  - Current hammer total
+  - Items with bids vs still open
+  - Top bids
+  - High-bidder USERNAMES (when your boss is signed in)
+  - Activity feed + Windows toasts when bids move
+
+This reads the same public sale data the website uses.
+Usernames come from bid history, which requires a CTBids login
+(the same Sign in your boss already uses on ctbids.com).
+
+FIRST-TIME SETUP
+----------------
+1. Open the "sale_watcher" folder.
+2. Double-click run_watcher.bat  (installs packages + Chromium once)
+   OR manually from inside this folder:
+      pip install -r requirements.txt
+      playwright install chromium
+      python app.py
+
+HOW TO USE
+----------
+1. Paste your sale link, e.g.
+   https://ctbids.com/estate-sale/46500
+
+2. Click "Sign in to CTBids".
+   A Chrome window opens — sign in with the boss account,
+   then close that window.
+
+3. Click "Start watching".
+   It refreshes on the interval you set (default 45 seconds).
+
+4. Watch the Activity feed and Top bids panel.
+   First bids and bid-ups can also pop a Windows notification.
+
+5. When the sale ends (or anytime), click "Export PDF".
+   Saves a hammer snapshot: metrics, top bidders, and all items
+   with bids (plus an HTML copy next to the PDF).
+   For tax/premium/invoice totals, still use Sale Report Generator
+   with the official CTBids CSV.
+
+NOTES
+-----
+- Without sign-in, prices/counts still update; usernames stay blank.
+- If usernames stop appearing, sign in again (token expired).
+- Be kind to CTBids — don't set refresh below ~15 seconds.
+- This is unofficial (not a CTBids-supported API product). It can
+  break if they change their site. For your own sale monitoring only.

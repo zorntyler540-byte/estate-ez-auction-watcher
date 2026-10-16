@@ -1,0 +1,79 @@
+ESTATE-EZ AUCTION WATCHER
+=========================
+
+WHAT IT DOES
+------------
+Watches your live CTBids sale and shows:
+  - Current hammer total
+  - Items with bids vs still open
+  - Top bids + SKU search
+  - High-bidder USERNAMES (Buyer sign in)
+  - Acct tags: Clean / Member / Suspended
+  - Unpaid invoices on any high bidder (Seller sign in)
+  - Activity feed + Windows toasts when bids move
+
+FIRST-TIME SETUP
+----------------
+1. Open the "sale_watcher" folder.
+2. Double-click run_watcher.bat  (installs packages + Chromium once)
+   OR manually from inside this folder:
+      pip install -r requirements.txt
+      playwright install chromium
+      python app.py
+
+   (Or use the combined suite: run_suite.bat from the parent folder.)
+
+HOW TO USE
+----------
+1. Sign in: Buyer (usernames) and Seller (unpaid + live sales).
+   After Seller sign-in, Live Watch loads this franchise's active
+   sales and fills the CTBids URL — no paste needed.
+   If more than one sale is live, tabs appear under the controls.
+   Click a tab, then Start. "Watch all" starts every live sale.
+   You can still type or paste a URL if you need a sale that is
+   not in the list.
+
+2. Click "Buyer sign in".
+   A Chrome window opens — sign in on ctbids.com,
+   then close that window. (Usernames + Suspended tags.)
+   The green Buyer check can appear as soon as you are signed in;
+   you still close the window when you are done.
+
+3. Click "Seller sign in".
+   Sign in on seller.ctbids.com with your franchise seller
+   account, then close that window.
+   (Unpaid invoice checks on all high bidders.)
+
+   After the first sign-in, Estate-Ez Auction Watcher keeps both sessions alive
+   (CTBids access tokens expire about every 30 minutes). You should
+   not need to reopen the login windows each time the check drops.
+
+4. Click "Start".
+   It refreshes on the interval you set (default 45 seconds).
+
+5. Watch the Activity feed and Top bids panel.
+   Unpaid (N) = unpaid invoices, even if not suspended.
+   Suspended · Unpaid = both suspension and unpaid.
+
+6. Keep watching while lots close. Sale Suite rewrites a LIVE CSV on every
+   refresh and freezes each lot's high bid as it closes (before CTBids can
+   zero missed-reserve amounts). Files go to:
+     Documents\Sale Reports\Live Snapshots
+     sale-#####-LIVE.csv          (running file, updated as lots close)
+     sale-#####-closing-....csv   (final copy when the last lot closes)
+     sale-#####-closing-....pdf   (SKU-prefix sold / not sold, high bid vs reserve)
+   Uncheck "Save bids as lots close" if you don't want that.
+
+7. You can still click "Export PDF" anytime.
+
+NOTES
+-----
+- Buyer and Seller use separate browser profiles so they don't
+  overwrite each other's login.
+- Without Buyer sign-in, prices still update; usernames stay blank.
+- Without Seller sign-in, Suspended still shows, but Unpaid does not.
+- If logins expire, sign in again.
+- Be kind to CTBids — don't set refresh below ~15 seconds.
+- This is unofficial (not a CTBids-supported API product).
+
+Estate-Ez Auction Watcher · © 2026 Zortron Tech Solutions

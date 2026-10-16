@@ -1,0 +1,33 @@
+# Built Windows app and send-out zip (~700 MB with Chromium)
+dist/
+build/
+*.zip
+
+# Local franchise copy — keep Coins Ale / live tokens off GitHub
+config.json
+*.dpapi
+*_password.dpapi
+login_usernames.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Generated reports and scratch
+client_reports/
+*.xlsx
+End_of_Sale_Report.html
+_tmp*
+*.lnk
+
+# Sample / downloaded CTBids CSVs
+*.csv
+
+# Editor / OS
+.cursor/
+.vscode/
+Thumbs.db
+Desktop.ini

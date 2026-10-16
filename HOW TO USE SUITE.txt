@@ -1,0 +1,73 @@
+ESTATE-EZ AUCTION WATCHER
+=========================
+
+For Caring Transitions / CTBids franchise owners.
+
+One window, three tabs:
+  - Live Watch  = mid-sale bids, usernames, Suspended / Unpaid / Voids / Paid, PDF
+  - At risk     = unique suspended, unpaid, or voided bidders across watched sales
+                   (Watched lots + CTBids bidding; needs Seller sign-in for invoices)
+  - Reports     = sale-history or active-sale CSV → HTML / Excel / PDF
+
+IF YOU RECEIVED THE ZIP
+-----------------------
+1. Extract the zip to a folder.
+2. Edit config.json → set your franchise business_name.
+3. Double-click  Estate-Ez Auction Watcher.exe
+4. See HOW TO INSTALL.txt if SmartScreen blocks the first run.
+
+LIVE WATCH
+----------
+1. Estate-Ez sign in — same email/password as the Estate-Ez website.
+   If CT Seller is connected on Account there, Watcher loads that Seller
+   session automatically (no second Seller login).
+2. Buyer sign in — CTBids buyer email/password for live usernames, or
+   “Use browser instead” if CTBids asks for a code. Finish the code in that
+   Chromium window, then close it.
+3. Seller sign in is only needed if Estate-Ez does not have CT Seller
+   connected yet (password, or Use browser instead on seller.ctbids.com).
+   Live Watch then loads this franchise's active sales from CT Seller
+   and fills the CTBids URL. If several sales are live, use the tabs
+   (or Watch all). Paste a URL only if you need a sale that is not listed.
+   (Check Remember on this PC. Green checks stay on — sessions refresh automatically.)
+4. Start watching (current tab) — or Watch all for every live sale
+5. Click a username to open their CT Seller page (suspend / notes / invoices).
+   Switch Top bids to Risky bidders for this sale: lots they are high on here,
+   lots on other watched sales, and CTBids current bids (other locations).
+   Click a username to open CT Seller; click a SKU to open that lot
+   (hover a SKU to see the item title).
+   In Activity, click a SUSPENDED / UNPAID / VOID line to open that buyer in CT Seller.
+   Select a row → Suspend, Okay, or Retract bids.
+   Right-click a bidder to Okay them (blue row — drops off At risk),
+   Suspend or Unsuspend at this Seller login's locations,
+   or retract on this lot / all their lots this sale (this Seller's sales only).
+6. At risk tab — unique bidders who are Suspended, have unpaid invoices, or have voided invoices
+   (Seller sign-in required for unpaid/voids). Watched lots = this franchise's live tabs.
+   CTBids bidding = Items Currently Bidding on the CT Seller buyer page (other locations too).
+   Select a row → Suspend / Okay / Retract / Open in Seller.
+   Click a username for CT Seller, or a SKU for that lot (hover for the title).
+7. Leave it running — it saves each lot's high bid as it closes, then a
+   final CSV/HTML/PDF when the sale ends (Documents\Sale Reports\Live Snapshots).
+   The PDF is grouped by SKU prefix (sold / not sold, high bid vs reserve).
+8. Live Watch shows Price, Reserve, and Met (Yes/No) on each lot.
+9. Export PDF anytime — same SKU-prefix layout
+
+REPORTS
+-------
+1. Download sale-history CSV from CTBids (end of sale), or active-sale CSV
+2. Reports tab → choose CSV → choose output folder
+3. Generate Reports  (each run makes a new dated subfolder so files are not overwritten)
+   Or (no CSV): type prefixes (MS, NK) or check Every prefix →
+   Choose sales & pull from CT Seller.
+   Or check One sale — all SKUs → pick one sale. That builds the owner
+   master (sale price, premium, tax, total) plus per-client prefix PDFs
+   and one all-SKU list. Estate-Ez or Seller sign-in on Live Watch first.
+Empty prefixes in config.json = auto-find SKU groups (MS, NK, SA, …)
+
+TO BUILD / SHARE A NEW ZIP (developer PC)
+-----------------------------------------
+Double-click build_suite.bat
+Send:  dist\Estate-Ez-Auction-Watcher.zip
+That zip uses a blank franchise config (not one city’s name).
+
+Estate-Ez Auction Watcher · © 2026 Zortron Tech Solutions

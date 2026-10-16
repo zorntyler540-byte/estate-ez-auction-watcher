@@ -1,0 +1,86 @@
+END OF SALE REPORT GENERATOR
+============================
+
+WHAT IT DOES
+------------
+Accepts either CTBids CSV export:
+
+  Sale-history (end of sale):
+  - One full internal report (all the numbers) for you.
+  - One separate report for each client, ready to send.
+
+  Active-sale (sale still running):
+  - One boss summary: hammer total, bidding activity, top items,
+    top bidders, SKU groups, and items that need attention.
+
+The app detects which kind of CSV you dropped — you don't choose.
+
+HOW TO USE IT (every sale)
+--------------------------
+1. In CTBids, download either:
+   - the sale-history report (after the sale), OR
+   - the active-sale report (while the sale is running)
+   as a CSV. Save it somewhere easy to find.
+
+2. Double-click "Sale Report Generator.exe".
+
+3. Tell the app which file to use, either way works:
+   - DRAG the CSV file from its folder and drop it onto the top box, OR
+   - Click the first "Browse..." button and pick the CSV file.
+
+4. The second box is where the reports will be saved. You can leave
+   it as-is or click "Browse..." to choose a different folder.
+
+5. Leave "Also create PDF versions" checked if you plan to email
+   the reports to clients (PDFs are the easiest for them to open).
+
+6. Click "Generate Reports" and wait a few seconds.
+
+7. When it says it's finished, click "Open Reports Folder".
+
+   For sale-history CSVs:
+   - "End_of_Sale_Report.html" is YOUR full report.
+   - The "client_reports" folder has one report per client.
+
+   For active-sale CSVs:
+   - "Active_Sale_Summary.html" is the boss mid-sale snapshot.
+   - "Active_Sale_Summary.xlsx" has the same numbers in Excel.
+
+   If you kept PDFs on, each HTML report also has a ".pdf" version.
+
+To view an HTML report, double-click it (it opens in your web
+browser). PDFs open on any phone or computer, which is why they
+are best for sending to clients.
+
+Note: PDF creation uses Microsoft Edge or Google Chrome, which is
+already on most Windows PCs. If neither is found, the app still
+makes the HTML reports and just skips the PDFs.
+
+ADDING, RENAMING, OR REMOVING CLIENTS
+-------------------------------------
+If you leave Manage Clients empty, the app finds every letter
+SKU prefix in the sale CSV (NK, SA, Z, …) and makes one report
+for each.
+
+To limit reports to specific clients, open the app and click
+"Manage Clients".
+
+In that window you can:
+  - Add a client: type the SKU prefix (like NK) and the client
+    name, then click "Add / Update".
+  - Rename a client: click it in the list, change the name, then
+    click "Add / Update".
+  - Remove a client: click it in the list, then "Remove".
+  - Clear all clients and Save to go back to auto-detect.
+Click "Save" when you're done. Your changes are remembered.
+
+TIP: The "SKU prefix" is just the letters at the START of the SKU.
+For example, prefix "NK" collects NK300, NK301, NK400, and so on.
+
+(Advanced: these settings are stored in "config.json" next to the
+app. You normally never need to open it by hand.)
+
+QUESTIONS / PROBLEMS
+--------------------
+If a message says the file "doesn't look like a CTBids export,"
+make sure you picked the sale-history CSV (not a different file).

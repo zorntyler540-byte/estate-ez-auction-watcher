@@ -1,0 +1,65 @@
+ESTATE-EZ AUCTION WATCHER — FOR FRANCHISE OWNERS (Windows)
+=========================================================
+
+This is the full program for Caring Transitions / CTBids franchise
+operators: Live Watch during a sale + end-of-sale client reports.
+
+No Python. No installer. Same zip for every franchise.
+
+INSTALL (about 2 minutes)
+-------------------------
+1. Download Estate-Ez-Auction-Watcher.zip (OneDrive / email / USB).
+2. Right-click → Extract All…
+   Example location:
+     C:\Users\YourName\Documents\Estate-Ez Auction Watcher
+3. Open the folder.
+4. Double-click:  Estate-Ez Auction Watcher.exe
+
+Optional: right-click the .exe → Send to → Desktop (create shortcut).
+
+FIRST OPEN
+----------
+1. Edit config.json (same folder as the .exe):
+     "business_name": "Caring Transitions Your City"
+   Leave "prefixes" as {} unless you use fixed SKU client codes.
+   (Empty prefixes = auto-detect SKU groups from each sale CSV.)
+
+2. Windows may show “Windows protected your PC” (SmartScreen).
+   Click More info → Run anyway. (The app is unsigned.)
+
+3. Keep the whole folder together. Do not move only the .exe —
+   it needs _internal\ and ms-playwright\.
+
+WHAT YOU GET
+------------
+Live Watch tab
+  - Paste your CTBids sale link and Start
+  - Buyer sign in  → usernames + Suspended tags
+  - Seller sign in → unpaid / paid invoice counts
+  - Time left, sort columns, export PDF snapshot
+
+Reports tab
+  - Drop in a CTBids sale-history CSV (or active-sale export)
+  - Generate HTML / Excel / optional PDF for your clients
+  - SKU groups become per-client reports automatically
+  - Or pull from CT Seller: type prefixes (MS, NK) or Every prefix,
+    then choose which sales. Or One sale — all SKUs for the owner master
+    (premium, tax, total) plus client reports. Seller sign-in first; no CSV.
+
+LOGINS (each franchise uses their own)
+--------------------------------------
+  Buyer  = that franchise’s ctbids.com account
+  Seller = that franchise’s seller.ctbids.com account
+Logins are saved on that PC only (not inside the zip).
+
+If CTBids asks for an email/text code (new PC), click
+“Use browser instead”, finish the code on the CTBids page,
+then close that Chromium window. Do not sign in in Edge/Chrome.
+
+UPDATES
+-------
+When a new zip is sent, replace the whole folder.
+config.json: copy your business_name / prefixes into the new folder
+if you customized them. Sign-in tokens stay in AppData and carry over.
+
+Estate-Ez Auction Watcher · © 2026 Zortron Tech Solutions
