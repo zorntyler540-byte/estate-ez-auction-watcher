@@ -378,6 +378,7 @@ class SellerClient:
         "closetime",
         "bidcount",
         "viewcount",
+        "watchercount",
         "itemid",
         "nickname",
         "firstname",

@@ -664,7 +664,22 @@ class SaleWatcher:
             self.latest = snap
         self._maybe_save_closing_snapshot(prev, snap)
         self._write_live_csv(snap, newly_closed)
+        self._push_engagement(snap)
         return snap, changes
+
+    def _push_engagement(self, snap: Snapshot) -> None:
+        """POST views/watchers/bids for this sale. Failures stay on the status line."""
+        try:
+            from engagement_sync import push_sale_snapshot
+        except ImportError:  # noqa: BLE001 - package vs script import
+            from sale_watcher.engagement_sync import push_sale_snapshot
+        try:
+            note = push_sale_snapshot(self.sale_id, snap, self.seller)
+        except Exception as exc:  # noqa: BLE001 - a snapshot failure must not stop Live Watch
+            self.say(f"Engagement snapshot not sent ({exc}).")
+            return
+        if note:
+            self.say(note)
 
     def _run(self) -> None:
         while not self._stop.is_set():
