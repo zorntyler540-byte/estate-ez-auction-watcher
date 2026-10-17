@@ -719,6 +719,7 @@ class WatcherApp:
             "sku": "SKU",
             "item": "Item",
             "price": "Price",
+            "buynow": "Buy now",
             "reserve": "Reserve",
             "met": "Met",
             "left": "Time left",
@@ -730,11 +731,12 @@ class WatcherApp:
             "paid": "Paid invoices",
             "category": "Category",
         }
-        self._num_cols = ("price", "reserve", "met", "left", "bids")
+        self._num_cols = ("price", "buynow", "reserve", "met", "left", "bids")
         self._col_defaults = {
             "sku": (100, 56, "w"),
             "item": (260, 80, "w"),
             "price": (76, 56, "e"),
+            "buynow": (84, 64, "e"),
             "reserve": (76, 56, "e"),
             "met": (88, 64, "e"),
             "left": (80, 56, "e"),
@@ -1091,7 +1093,7 @@ class WatcherApp:
         self.table_wrap = table_host
 
         cols = (
-            "sku", "item", "price", "reserve", "met", "left", "bids",
+            "sku", "item", "price", "buynow", "reserve", "met", "left", "bids",
             "bidder", "status", "unpaid", "voids", "paid", "category", "view", "pad",
         )
         self.bids_tree = ttk.Treeview(
@@ -2540,6 +2542,7 @@ class WatcherApp:
             "price_up": (GREEN_SOFT, GREEN, "BID UP"),
             "bidder_change": (GREEN_SOFT, GREEN_DARK, "BIDDER"),
             "sold": (GREEN_SOFT, GREEN, "SOLD"),
+            "buy_now": (GREEN_SOFT, GREEN, "BOUGHT NOW"),
             "risk": (AMBER_SOFT, RED, "OPEN IN SELLER"),
             "info": (THEMES[self.theme_mode]["info_bg"], MUTED, "INFO"),
         }
@@ -3675,7 +3678,9 @@ class WatcherApp:
         else:
             self._sort_col = col
             # First click: high→low for money/counts; soonest-first for time; A→Z for text
-            self._sort_asc = col not in ("price", "reserve", "met", "bids", "unpaid", "voids", "paid")
+            self._sort_asc = col not in (
+                "price", "buynow", "reserve", "met", "bids", "unpaid", "voids", "paid",
+            )
         self._refresh_sort_headings()
         self._bids_fingerprint = ""
         self._render_bids()
@@ -3710,6 +3715,8 @@ class WatcherApp:
             return (item.sku or "").lower()
         if col == "price":
             return float(item.bid_price or 0)
+        if col == "buynow":
+            return float(item.buy_now_price or 0)
         if col == "reserve":
             return float(item.reserve_price or 0)
         if col == "met":
@@ -3741,7 +3748,7 @@ class WatcherApp:
         query = self.search_var.get().strip().lower()
         rows: list[LiveItem] = []
         for it in snap.items.values():
-            if mode == "bidding" and not it.has_bids:
+            if mode == "bidding" and not it.has_bids and it.buy_now_price <= 0:
                 continue
             if mode == "open" and (not it.is_open or it.has_bids):
                 continue
@@ -3796,6 +3803,7 @@ class WatcherApp:
     def _row_values(self, item: LiveItem) -> tuple[str, ...]:
         bidding = item.has_bids
         price = _money(item.bid_price) if bidding else "—"
+        buy_now = _money(item.buy_now_price) if item.buy_now_price > 0 else "—"
         left = format_time_left(item)
         bids = str(item.bid_count) if bidding else "—"
         bidder = item.high_bidder if item.high_bidder else ("—" if bidding else "")
@@ -3804,6 +3812,7 @@ class WatcherApp:
             item.sku or "—",
             item.title,
             price,
+            buy_now,
             format_reserve(item),
             format_met(item),
             left,
@@ -3860,7 +3869,8 @@ class WatcherApp:
         rows = self._filtered_rows(snap)
         fingerprint = "|".join(
             f"{it.item_id}:{it.bid_price}:{it.bid_count}:{it.high_bidder}:"
-            f"{it.account_status}:{it.item_status}:{it.close_time}:{it.reserve_price}"
+            f"{it.account_status}:{it.item_status}:{it.close_time}:{it.reserve_price}:"
+            f"{it.buy_now_price}:{int(it.bought_now)}"
             for it in rows
         )
         fingerprint = (
@@ -4866,6 +4876,10 @@ class WatcherApp:
                 if ch.item.high_bidder:
                     msg += f" · {ch.item.high_bidder}"
                 focus_ids.append(ch.item.item_id)
+            elif ch.kind == "buy_now":
+                paid = ch.item.bid_price or ch.item.buy_now_price
+                msg = f"{title}\nBought now {_money(paid)}"
+                focus_ids.append(ch.item.item_id)
             else:
                 msg = ch.message
             buyer_id = int(ch.item.buyer_id or 0)
@@ -4925,6 +4939,8 @@ class WatcherApp:
                 )
             elif ch.kind == "sold":
                 _toast(ch.item.sku or "Sold", f"{sale_bit}{ch.message}")
+            elif ch.kind == "buy_now":
+                _toast("Bought now", f"{sale_bit}{ch.message}")
             elif ch.kind in ("first_bid", "price_up"):
                 toast_title = ch.item.sku or (sess.title if sess else "Estate-Ez Auction Watcher")
                 _toast(toast_title, f"{sale_bit}{ch.message}" if sale_bit else ch.message)

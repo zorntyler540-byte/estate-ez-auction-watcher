@@ -410,7 +410,33 @@ class SellerClient:
         """Live lots from the report that carries Number of Views and Number of Watchers."""
         return self._paged_sale_report("/report/sale/list", self.ACTIVE_SALE_FIELDS, sale_id)
 
-    def _paged_sale_report(self, path: str, fields: tuple[str, ...] | list[str], sale_id: int) -> list[dict[str, Any]]:
+    # Seller item list. Buy It Now is "Direct buy" / buynowprice. No bidder identity.
+    BUY_NOW_FIELDS = (
+        "id",
+        "itemtypeid",
+        "itemtypename",
+        "itemstatus",
+        "buynowprice",
+        "itemsoldprice",
+        "soldprice",
+    )
+
+    def fetch_buy_now_items(self, sale_id: int) -> list[dict[str, Any]]:
+        """Asking price and sold amount for Buy It Now / Direct buy lots on this sale."""
+        return self._paged_sale_report(
+            "/item/list",
+            self.BUY_NOW_FIELDS,
+            sale_id,
+            extra_filters=[{"field": "isDeleted", "value": 1, "op": "!=", "join": "AND"}],
+        )
+
+    def _paged_sale_report(
+        self,
+        path: str,
+        fields: tuple[str, ...] | list[str],
+        sale_id: int,
+        extra_filters: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         if not self.access_token:
             raise PermissionError("CT Seller login expired or missing. Sign in to Seller again.")
         rows: list[dict[str, Any]] = []
@@ -422,11 +448,14 @@ class SellerClient:
             page: dict[str, Any] = {"size": 200}
             if next_key:
                 page["next"] = next_key
+            filters: list[dict[str, Any]] = [
+                {"field": "saleid", "value": int(sale_id), "op": "=", "join": "AND"},
+            ]
+            if extra_filters:
+                filters.extend(extra_filters)
             body = {
                 "field": list(fields),
-                "filter": [
-                    {"field": "saleid", "value": int(sale_id), "op": "=", "join": "AND"},
-                ],
+                "filter": filters,
                 "page": page,
             }
             resp = self.session.post(
