@@ -378,7 +378,6 @@ class SellerClient:
         "closetime",
         "bidcount",
         "viewcount",
-        "watchercount",
         "itemid",
         "nickname",
         "firstname",
@@ -388,8 +387,30 @@ class SellerClient:
         "isshippable",
     )
 
+    # Active-sale report (seller UI "sale active report"). Watchers are wishlistcount.
+    # Bidder name, email, and phone fields are intentionally absent.
+    ACTIVE_SALE_FIELDS = (
+        "itemid",
+        "sku",
+        "itemtitle",
+        "itemstatus",
+        "saleid",
+        "viewcount",
+        "wishlistcount",
+        "bidcount",
+        "saleprice",
+        "reserveprice",
+    )
+
     def fetch_sale_history_items(self, sale_id: int) -> list[dict[str, Any]]:
         """Lots on one sale from the same report CT Seller's sale-history CSV uses."""
+        return self._paged_sale_report("/report/sale/item/list", self.SALE_HISTORY_FIELDS, sale_id)
+
+    def fetch_active_sale_items(self, sale_id: int) -> list[dict[str, Any]]:
+        """Live lots from the report that carries Number of Views and Number of Watchers."""
+        return self._paged_sale_report("/report/sale/list", self.ACTIVE_SALE_FIELDS, sale_id)
+
+    def _paged_sale_report(self, path: str, fields: tuple[str, ...] | list[str], sale_id: int) -> list[dict[str, Any]]:
         if not self.access_token:
             raise PermissionError("CT Seller login expired or missing. Sign in to Seller again.")
         rows: list[dict[str, Any]] = []
@@ -402,14 +423,14 @@ class SellerClient:
             if next_key:
                 page["next"] = next_key
             body = {
-                "field": list(self.SALE_HISTORY_FIELDS),
+                "field": list(fields),
                 "filter": [
                     {"field": "saleid", "value": int(sale_id), "op": "=", "join": "AND"},
                 ],
                 "page": page,
             }
             resp = self.session.post(
-                f"{SELLER_API}/report/sale/item/list",
+                f"{SELLER_API}{path}",
                 data=json.dumps(body),
                 timeout=90,
             )

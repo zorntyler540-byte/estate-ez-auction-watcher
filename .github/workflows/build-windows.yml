@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - cursor/watcher-windows-zip-56bd
+      - cursor/watcher-views-watchers-56bd
 
 jobs:
   zip:
