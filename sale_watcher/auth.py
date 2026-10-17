@@ -37,8 +37,11 @@ _JS_READ_TOKENS = """() => ({
   refresh: window.localStorage.getItem('refresh') || '',
 })"""
 
+_JS_READ_ESTATE_EZ = """() => window.localStorage.getItem('token') || ''"""
+
 _buyer_profile_lock = threading.Lock()
 _seller_profile_lock = threading.Lock()
+_estate_ez_profile_lock = threading.Lock()
 _password_login_blocked_until: dict[str, float] = {}
 
 
@@ -56,6 +59,12 @@ def profile_dir() -> Path:
 
 def seller_profile_dir() -> Path:
     path = watcher_data_dir() / "seller_browser_profile"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def estate_ez_profile_dir() -> Path:
+    path = watcher_data_dir() / "estate_ez_browser_profile"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -599,28 +608,63 @@ def _read_tokens_from_pages(context) -> tuple[str | None, str | None]:
     return access, refresh
 
 
+def browser_channel_order(*, headless: bool, saved: str | None) -> list[str | None]:
+    """Visible sign-in prefers the installed Chrome or Edge. Quiet reads stay on the last one."""
+    if saved == "chromium":
+        return [None]
+    if saved in ("chrome", "msedge"):
+        return [saved, None]
+    if headless:
+        return [None]
+    return ["chrome", "msedge", None]
+
+
+def _saved_browser_channel() -> str | None:
+    path = watcher_data_dir() / "browser_channel.txt"
+    if not path.exists():
+        return None
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value if value in ("chrome", "msedge", "chromium") else None
+
+
+def _remember_browser_channel(channel: str | None) -> None:
+    path = watcher_data_dir() / "browser_channel.txt"
+    try:
+        path.write_text(channel or "chromium", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _launch_persistent(user_data_dir: Path, *, headless: bool):
     sync_playwright = _playwright()
     _clear_stale_profile_locks(user_data_dir)
     pw = sync_playwright().start()
-    try:
-        context = pw.chromium.launch_persistent_context(
-            user_data_dir=str(user_data_dir),
-            headless=headless,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-    except Exception:
-        _clear_stale_profile_locks(user_data_dir)
+    last_error: Exception | None = None
+    for channel in browser_channel_order(headless=headless, saved=_saved_browser_channel()):
+        kwargs: dict = {
+            "user_data_dir": str(user_data_dir),
+            "headless": headless,
+            "args": ["--disable-blink-features=AutomationControlled"],
+        }
+        if channel:
+            kwargs["channel"] = channel
         try:
-            context = pw.chromium.launch_persistent_context(
-                user_data_dir=str(user_data_dir),
-                headless=headless,
-                args=["--disable-blink-features=AutomationControlled"],
-            )
-        except Exception:
-            pw.stop()
-            raise
-    return pw, context
+            context = pw.chromium.launch_persistent_context(**kwargs)
+        except Exception as exc:
+            last_error = exc
+            _clear_stale_profile_locks(user_data_dir)
+            continue
+        # A quiet token read must not lock sign-in onto the bundled browser.
+        if not headless:
+            _remember_browser_channel(channel)
+        return pw, context
+    pw.stop()
+    if last_error:
+        raise last_error
+    raise RuntimeError("Could not open a browser for sign-in.")
 
 
 def _read_tokens_from_profile(
@@ -944,4 +988,69 @@ def open_seller_login_window(on_tokens: Callable[[str], None] | None = None) -> 
             return access
         save_seller_access_token(None)
         return None
+    return None
+
+
+def _read_page_value(context, script: str) -> str | None:
+    for page in list(context.pages):
+        try:
+            raw = page.evaluate(script)
+        except Exception:
+            continue
+        value = str(raw or "").strip()
+        if value:
+            return value
+    return None
+
+
+def open_estate_ez_login_window(on_token: Callable[[str], None] | None = None) -> str | None:
+    """Open the Estate-Ez website so staff can sign in on the page."""
+    try:
+        from estate_ez import save_estate_ez_token, web_base
+    except ImportError:  # noqa: BLE001 - package vs script import
+        from sale_watcher.estate_ez import save_estate_ez_token, web_base
+    if not _estate_ez_profile_lock.acquire(timeout=90):
+        raise RuntimeError("Estate-Ez browser is busy. Close the other sign-in window and try again.")
+    try:
+        pw, context = _launch_persistent(estate_ez_profile_dir(), headless=False)
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(web_base(), wait_until="domcontentloaded", timeout=90000)
+            token = None
+            announced = False
+            deadline = time.time() + 15 * 60
+            while time.time() < deadline:
+                pages = list(context.pages)
+                if not pages:
+                    break
+                got = _read_page_value(context, _JS_READ_ESTATE_EZ)
+                if got:
+                    token = got
+                if token and on_token and not announced:
+                    announced = True
+                    try:
+                        on_token(token)
+                    except Exception:
+                        pass
+                try:
+                    pages[0].wait_for_timeout(800)
+                except Exception:
+                    time.sleep(0.8)
+            got = _read_page_value(context, _JS_READ_ESTATE_EZ)
+            if got:
+                token = got
+        finally:
+            try:
+                context.close()
+            except Exception:
+                pass
+            try:
+                pw.stop()
+            except Exception:
+                pass
+    finally:
+        _estate_ez_profile_lock.release()
+    if token:
+        save_estate_ez_token(token)
+        return token
     return None
