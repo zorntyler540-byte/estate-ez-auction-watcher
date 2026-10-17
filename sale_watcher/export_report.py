@@ -200,7 +200,9 @@ def _item_rows(items: list[LiveItem], *, bucket: str) -> str:
     for it in items:
         missed = bucket != "sold" and _below_reserve(it)
         cls = "sold" if bucket == "sold" else ("missed" if missed else "unsold")
-        if bucket == "sold":
+        if bucket == "sold" and it.bought_now:
+            status, badge_cls = "Bought now", "sold-badge"
+        elif bucket == "sold":
             status, badge_cls = "Sold", "sold-badge"
         elif bucket == "open":
             status, badge_cls = "Open", "open-badge"
@@ -215,12 +217,14 @@ def _item_rows(items: list[LiveItem], *, bucket: str) -> str:
             met_html = '<span class="muted">—</span>'
         reserve_cell = _money(it.reserve_price) if it.reserve_price > 0 else "—"
         bid_cell = _money(it.bid_price) if it.bid_price > 0 else "—"
+        buy_cell = _money(it.buy_now_price) if it.buy_now_price > 0 else "—"
         rows.append(
             f'<tr class="{cls}">'
             f"<td>{_esc(it.sku) or '<span class=\"muted\">—</span>'}</td>"
             f"<td>{_esc(it.title)}</td>"
             f'<td><span class="status-badge {badge_cls}">{status}</span></td>'
             f'<td class="num">{bid_cell}</td>'
+            f'<td class="num">{buy_cell}</td>'
             f'<td class="num">{reserve_cell}</td>'
             f"<td>{met_html}</td>"
             "</tr>"
@@ -238,8 +242,10 @@ def _section_table(items: list[LiveItem], *, bucket: str) -> str:
     else:
         label = "Not sold"
     bid_sum = sum(it.bid_price for it in items)
+    buy_sum = sum(it.buy_now_price for it in items if it.buy_now_price > 0)
     reserve_sum = sum(it.reserve_price for it in items if it.reserve_price > 0)
     foot_bid = _money(bid_sum) if bid_sum else "—"
+    foot_buy = _money(buy_sum) if buy_sum else "—"
     foot_res = _money(reserve_sum) if reserve_sum else "—"
     return f"""
   <h3>{label} ({len(items)})</h3>
@@ -250,6 +256,7 @@ def _section_table(items: list[LiveItem], *, bucket: str) -> str:
         <th>Item</th>
         <th>Status</th>
         <th class="num">High bid</th>
+        <th class="num">Buy now</th>
         <th class="num">Reserve</th>
         <th>Met reserve</th>
       </tr>
@@ -261,6 +268,7 @@ def _section_table(items: list[LiveItem], *, bucket: str) -> str:
       <tr>
         <td colspan="3">{label} subtotal — {len(items)} items</td>
         <td class="num">{foot_bid}</td>
+        <td class="num">{foot_buy}</td>
         <td class="num">{foot_res}</td>
         <td></td>
       </tr>
@@ -465,6 +473,7 @@ def write_closing_csv(snap: Snapshot, csv_path: Path) -> Path:
                 "Item ID",
                 "Status",
                 "High Bid",
+                "Buy Now Price",
                 "Reserve Price",
                 "Met Reserve",
                 "Number of Bids",
@@ -481,6 +490,7 @@ def write_closing_csv(snap: Snapshot, csv_path: Path) -> Path:
                     it.item_id,
                     it.item_status,
                     f"{it.bid_price:.2f}",
+                    f"{it.buy_now_price:.2f}",
                     f"{it.reserve_price:.2f}",
                     _met_reserve(it),
                     it.bid_count,

@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
-hiddenimports = ['pandas', 'openpyxl', 'requests', 'brand', 'sale_watcher.app', 'sale_watcher.watcher', 'sale_watcher.auth', 'sale_watcher.estate_ez', 'sale_watcher.ctbids_client', 'sale_watcher.seller_client', 'sale_watcher.export_report', 'report_engine', 'build_active_sale_report', 'build_end_of_sale_report', 'extract_sku_prefixes', 'runtime_paths']
+hiddenimports = ['pandas', 'openpyxl', 'requests', 'brand', 'sale_watcher.app', 'sale_watcher.watcher', 'sale_watcher.auth', 'sale_watcher.estate_ez', 'sale_watcher.engagement_sync', 'engagement_sync', 'sale_watcher.ctbids_client', 'sale_watcher.seller_client', 'sale_watcher.export_report', 'report_engine', 'build_active_sale_report', 'build_end_of_sale_report', 'extract_sku_prefixes', 'runtime_paths']
 tmp_ret = collect_all('customtkinter')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('tkinterdnd2')
