@@ -3,11 +3,28 @@ dist/
 build/
 *.zip
 
-# Local franchise copy — keep Coins Ale / live tokens off GitHub
+# Local env — copy .env.example to .env; never commit secrets
+.env
+.env.*
+!.env.example
+
+# Local franchise copy — keep live tokens / passwords off GitHub
 config.json
 *.dpapi
 *_password.dpapi
 login_usernames.json
+access_token.txt
+refresh_token.txt
+seller_access_token.txt
+seller_refresh_token.txt
+estate_ez_access_token.txt
+watcher_config.json
+browser_profile/
+seller_browser_profile/
+
+# Probe dumps can contain live CTBids bidder data if scripts are run
+*_probe_out*.json
+_bidder_probe_out*.json
 
 # Python
 __pycache__/

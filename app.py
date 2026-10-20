@@ -15,6 +15,7 @@ from tkinter import BooleanVar, StringVar, filedialog, messagebox
 
 import customtkinter as ctk
 
+from runtime_paths import prepare_runtime
 from report_engine import (
     app_dir,
     generate_one_sale_from_seller,
@@ -25,6 +26,8 @@ from report_engine import (
     save_config,
 )
 from build_sku_rollup_report import parse_sku_prefixes
+
+prepare_runtime()
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD

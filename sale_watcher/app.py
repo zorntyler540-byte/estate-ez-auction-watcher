@@ -24,6 +24,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from brand import APP_NAME as APP_TITLE, COPYRIGHT
+from runtime_paths import prepare_runtime
 from ctbids_client import BidChange, LiveItem, Snapshot, buyer_sale_url, item_link, parse_sale_id
 from export_report import export_snapshot
 from seller_client import REVOKE_TYPES, SELLER_SITE, SUSPEND_TYPES, SellerClient, SellerSale
@@ -49,6 +50,8 @@ from watcher import (
     sign_in_estate_ez,
     verify_buyer_mfa,
 )
+
+prepare_runtime()
 
 THEMES = {
     # Matches Estate Inventory SaaS: charcoal surfaces + teal accent
