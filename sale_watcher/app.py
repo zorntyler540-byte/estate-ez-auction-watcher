@@ -29,26 +29,17 @@ from ctbids_client import BidChange, LiveItem, Snapshot, buyer_sale_url, item_li
 from export_report import export_snapshot
 from seller_client import REVOKE_TYPES, SELLER_SITE, SUSPEND_TYPES, SellerClient, SellerSale
 from watcher import (
-    BuyerMfaRequired,
     EstateEzAuthError,
     EstateEzSellerNotConnected,
     SaleWatcher,
-    clear_saved_password,
     keep_sessions_fresh,
     load_estate_ez_token,
-    load_saved_password,
-    load_saved_username,
     load_watcher_config,
-    login_with_password,
     open_login_window,
     open_seller_login_window,
     resolve_access_token,
     resolve_seller_access_token,
-    save_login_credentials,
     save_watcher_config,
-    send_buyer_mfa_otp,
-    sign_in_estate_ez,
-    verify_buyer_mfa,
 )
 
 prepare_runtime()
@@ -703,6 +694,7 @@ class WatcherApp:
         self.token: str | None = None
         self.seller_token: str | None = None
         self.estate_ez_token: str | None = load_estate_ez_token()
+        self._browser_signin_busy: set[str] = set()
         self.watcher: SaleWatcher | None = None
         self._sessions: dict[int, _WatchSession] = {}
         self._active_sale_id: int | None = None
@@ -795,7 +787,6 @@ class WatcherApp:
         self.login_var = StringVar(value="Buyer —  ·  Seller —")
         self.updated_var = StringVar(value="")
         self.theme_mode = "light" if str(self.cfg.get("theme", "dark")).lower() == "light" else "dark"
-        self._sign_in_windows: dict[str, ctk.CTkToplevel] = {}
 
         _apply_palette(self.theme_mode)
         if manage_window:
@@ -4045,457 +4036,32 @@ class WatcherApp:
         self._append_activity(message, kind="info")
 
     def _on_login(self) -> None:
-        self._open_sign_in_dialog("buyer")
+        self._browser_sign_in("buyer")
 
     def _on_seller_login(self) -> None:
-        self._open_sign_in_dialog("seller")
+        self._browser_sign_in("seller")
 
     def _on_estate_ez_login(self) -> None:
-        self._open_estate_ez_dialog()
+        self._browser_sign_in("estateez")
 
-    def _open_estate_ez_dialog(self) -> None:
-        existing = self._sign_in_windows.get("estateez")
-        if existing is not None:
-            try:
-                existing.lift()
-                existing.focus_force()
-                return
-            except Exception:
-                self._sign_in_windows.pop("estateez", None)
-
-        win = ctk.CTkToplevel(self.root)
-        self._sign_in_windows["estateez"] = win
-        win.title("Estate-Ez sign in")
-        win.geometry("440x340")
-        win.minsize(420, 320)
-        win.transient(self.root)
-        try:
-            win.configure(fg_color=THEMES[self.theme_mode]["window"])
-        except Exception:
-            pass
-        win.after(200, win.grab_set)
-
-        def _on_close() -> None:
-            self._sign_in_windows.pop("estateez", None)
-            try:
-                win.grab_release()
-            except Exception:
-                pass
-            win.destroy()
-
-        win.protocol("WM_DELETE_WINDOW", _on_close)
-
-        email_var = StringVar(value=load_saved_username("estateez"))
-        password_var = StringVar(value=load_saved_password("estateez"))
-        remember_var = BooleanVar(value=True)
-        status_local = StringVar(value="")
-        pad = 18
-        ctk.CTkLabel(
-            win, text="Estate-Ez sign in", font=("Segoe UI Semibold", 20), text_color=GREEN_DARK,
-        ).pack(anchor="w", padx=pad, pady=(pad, 4))
-        ctk.CTkLabel(
-            win,
-            text="Same email and password as the Estate-Ez website. If CT Seller is connected on Account, Watcher loads that session — no second Seller login.",
-            font=("Segoe UI", 13), text_color=MUTED, wraplength=390, justify="left",
-        ).pack(anchor="w", padx=pad, pady=(0, 10))
-
-        card = ctk.CTkFrame(win, corner_radius=12, fg_color=WHITE)
-        card.pack(fill="x", padx=pad)
-        ctk.CTkLabel(card, text="Email", font=("Segoe UI Semibold", 13), text_color=GREEN_DARK).pack(
-            anchor="w", padx=14, pady=(12, 4)
-        )
-        email_entry = ctk.CTkEntry(card, textvariable=email_var, height=36)
-        email_entry.pack(fill="x", padx=14)
-        ctk.CTkLabel(card, text="Password", font=("Segoe UI Semibold", 13), text_color=GREEN_DARK).pack(
-            anchor="w", padx=14, pady=(10, 4)
-        )
-        password_entry = ctk.CTkEntry(card, textvariable=password_var, height=36, show="•")
-        password_entry.pack(fill="x", padx=14)
-        ctk.CTkCheckBox(
-            card,
-            text="Remember on this PC",
-            variable=remember_var,
-            fg_color=GREEN,
-            hover_color=GREEN_HOVER,
-            text_color=GREEN_DARK,
-            font=("Segoe UI", 12),
-        ).pack(anchor="w", padx=14, pady=(10, 12))
-
-        ctk.CTkLabel(win, textvariable=status_local, font=("Segoe UI", 12), text_color=MUTED).pack(
-            anchor="w", padx=pad, pady=(8, 0)
-        )
-        btns = ctk.CTkFrame(win, fg_color="transparent")
-        btns.pack(fill="x", padx=pad, pady=(8, pad))
-        sign_btn = ctk.CTkButton(
-            btns,
-            text="Sign in",
-            width=120,
-            height=36,
-            fg_color=GREEN,
-            hover_color=GREEN_HOVER,
-            text_color=ON_ACCENT,
-            font=("Segoe UI Semibold", 13),
-        )
-        sign_btn.pack(side="left")
-
-        def _fail(msg: str) -> None:
-            sign_btn.configure(state="normal")
-            status_local.set(msg)
-
-        def _ok(ee_token: str, seller_access: str | None, seller_note: str) -> None:
-            self.estate_ez_token = ee_token
-            self._refresh_login_badge()
-            if seller_access:
-                self._apply_seller_token(seller_access, True)
-            self.status_var.set(seller_note)
-            self._append_activity(seller_note, kind="info")
-            _on_close()
-
-        def submit(_event=None) -> None:
-            email = email_var.get().strip()
-            password = password_var.get()
-            if not email or not password:
-                status_local.set("Enter email and password.")
-                return
-            sign_btn.configure(state="disabled")
-            status_local.set("Signing in…")
-
-            def work() -> None:
-                try:
-                    result = sign_in_estate_ez(email, password, remember=remember_var.get())
-                except EstateEzSellerNotConnected as exc:
-                    ee_token = load_estate_ez_token()
-
-                    def _partial() -> None:
-                        self.estate_ez_token = ee_token
-                        self._refresh_login_badge()
-                        note = str(exc) or "Connect CT Seller on Estate-Ez → Account, then sign in again."
-                        self.status_var.set(note)
-                        self._append_activity(note, kind="info")
-                        _on_close()
-
-                    self.root.after(0, _partial)
-                    return
-                except Exception as exc:
-                    msg = str(exc) or type(exc).__name__
-                    self.root.after(0, lambda m=msg: _fail(m))
-                    return
-                seller = result.get("seller") or {}
-                access = str(seller.get("access_token") or "") or None
-                note = (
-                    "Estate-Ez signed in. CT Seller session loaded from your account."
-                    if access
-                    else "Estate-Ez signed in."
-                )
-                self.root.after(0, lambda t=result["estate_ez_token"], a=access, n=note: _ok(t, a, n))
-
-            threading.Thread(target=work, daemon=True).start()
-
-        sign_btn.configure(command=submit)
-        win.bind("<Return>", submit)
-        if email_var.get():
-            password_entry.focus_set()
-        else:
-            email_entry.focus_set()
-
-    def _open_sign_in_dialog(self, kind: str) -> None:
-        existing = self._sign_in_windows.get(kind)
-        if existing is not None:
-            try:
-                existing.lift()
-                existing.focus_force()
-                return
-            except Exception:
-                self._sign_in_windows.pop(kind, None)
-
-        is_seller = kind == "seller"
-        title = "Seller sign in" if is_seller else "Buyer sign in"
-        hint = (
-            "CT Seller email and password — unpaid / paid counts."
-            if is_seller
-            else "CTBids buyer email and password — usernames and Suspended."
-        )
-        win = ctk.CTkToplevel(self.root)
-        self._sign_in_windows[kind] = win
-        win.title(title)
-        win.geometry("420x360")
-        win.minsize(400, 340)
-        win.transient(self.root)
-        try:
-            win.configure(fg_color=THEMES[self.theme_mode]["window"])
-        except Exception:
-            pass
-        win.after(200, win.grab_set)
-
-        def _on_close() -> None:
-            self._sign_in_windows.pop(kind, None)
-            try:
-                win.grab_release()
-            except Exception:
-                pass
-            win.destroy()
-
-        win.protocol("WM_DELETE_WINDOW", _on_close)
-
-        email_var = StringVar(value=load_saved_username(kind))
-        password_var = StringVar(value=load_saved_password(kind))
-        remember_var = BooleanVar(value=True)
-        trust_var = BooleanVar(value=True)
-        otp_var = StringVar(value="")
-        status_local = StringVar(value="")
-        mfa_hint = StringVar(value="")
-        mfa_state = {"token": "", "channel": ""}
-
-        pad = 18
-        ctk.CTkLabel(
-            win, text=title, font=("Segoe UI Semibold", 20), text_color=GREEN_DARK,
-        ).pack(anchor="w", padx=pad, pady=(pad, 4))
-        hint_lbl = ctk.CTkLabel(
-            win, text=hint, font=("Segoe UI", 13), text_color=MUTED, wraplength=370, justify="left",
-        )
-        hint_lbl.pack(anchor="w", padx=pad, pady=(0, 10))
-
-        card = ctk.CTkFrame(win, corner_radius=12, fg_color=WHITE)
-        card.pack(fill="x", padx=pad)
-
-        ctk.CTkLabel(card, text="Email", font=("Segoe UI Semibold", 13), text_color=GREEN_DARK).pack(
-            anchor="w", padx=14, pady=(12, 4)
-        )
-        email_entry = ctk.CTkEntry(card, textvariable=email_var, height=36)
-        email_entry.pack(fill="x", padx=14)
-        pw_label = ctk.CTkLabel(card, text="Password", font=("Segoe UI Semibold", 13), text_color=GREEN_DARK)
-        pw_label.pack(anchor="w", padx=14, pady=(10, 4))
-        password_entry = ctk.CTkEntry(card, textvariable=password_var, height=36, show="•")
-        password_entry.pack(fill="x", padx=14)
-        ctk.CTkCheckBox(
-            card,
-            text="Remember on this PC",
-            variable=remember_var,
-            fg_color=GREEN,
-            hover_color=GREEN_HOVER,
-            text_color=GREEN_DARK,
-            font=("Segoe UI", 12),
-        ).pack(anchor="w", padx=14, pady=(10, 12))
-
-        mfa_frame = ctk.CTkFrame(win, corner_radius=12, fg_color=WHITE)
-        ctk.CTkLabel(
-            mfa_frame, textvariable=mfa_hint, font=("Segoe UI", 13),
-            text_color=GREEN_DARK, wraplength=360, justify="left",
-        ).pack(anchor="w", padx=14, pady=(12, 8))
-        mfa_choice = ctk.CTkFrame(mfa_frame, fg_color="transparent")
-        mfa_choice.pack(fill="x", padx=14)
-        email_code_btn = ctk.CTkButton(mfa_choice, text="Email me a code", width=150, height=32)
-        email_code_btn.pack(side="left")
-        sms_code_btn = ctk.CTkButton(mfa_choice, text="Text me a code", width=150, height=32)
-        sms_code_btn.pack(side="left", padx=(8, 0))
-        ctk.CTkLabel(
-            mfa_frame, text="Paste the 6-digit code here", font=("Segoe UI Semibold", 13), text_color=GREEN_DARK,
-        ).pack(anchor="w", padx=14, pady=(10, 4))
-        otp_entry = ctk.CTkEntry(mfa_frame, textvariable=otp_var, height=40, placeholder_text="______")
-        otp_entry.pack(fill="x", padx=14)
-        ctk.CTkCheckBox(
-            mfa_frame,
-            text="Trust this PC (skip the code next time if CTBids allows it)",
-            variable=trust_var,
-            fg_color=GREEN,
-            hover_color=GREEN_HOVER,
-            text_color=GREEN_DARK,
-            font=("Segoe UI", 12),
-        ).pack(anchor="w", padx=14, pady=(8, 4))
-        mfa_actions = ctk.CTkFrame(mfa_frame, fg_color="transparent")
-        mfa_actions.pack(fill="x", padx=14, pady=(4, 12))
-        verify_btn = ctk.CTkButton(mfa_actions, text="Verify code", width=120, height=32)
-        verify_btn.pack(side="left")
-        resend_btn = ctk.CTkButton(
-            mfa_actions, text="Resend", width=80, height=32,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT,
-        )
-        resend_btn.pack(side="left", padx=(8, 0))
-
-        ctk.CTkLabel(win, textvariable=status_local, font=("Segoe UI", 12), text_color=MUTED).pack(
-            anchor="w", padx=pad, pady=(8, 0)
-        )
-
-        btns = ctk.CTkFrame(win, fg_color="transparent")
-        btns.pack(fill="x", padx=pad, pady=(8, pad))
-        sign_btn = ctk.CTkButton(
-            btns,
-            text="Sign in",
-            width=120,
-            height=36,
-            fg_color=GREEN,
-            hover_color=GREEN_HOVER,
-            text_color=ON_ACCENT,
-            font=("Segoe UI Semibold", 13),
-        )
-        sign_btn.pack(side="left")
-        ctk.CTkButton(
-            btns,
-            text="Use browser instead",
-            width=150,
-            height=36,
-            fg_color="transparent",
-            text_color=GREEN,
-            border_color=GREEN,
-            border_width=1,
-            hover_color=GREEN_SOFT,
-            command=lambda: self._browser_sign_in(kind, _on_close),
-        ).pack(side="left", padx=(8, 0))
-
-        def _save_creds() -> None:
-            email = email_var.get().strip()
-            password = str(mfa_state.get("password") or password_var.get() or "")
-            if remember_var.get():
-                save_login_credentials(kind, email, password)
-            else:
-                save_login_credentials(kind, email, None)
-                clear_saved_password(kind)
-
-        def _fail(msg: str) -> None:
-            sign_btn.configure(state="normal")
-            email_code_btn.configure(state="normal")
-            sms_code_btn.configure(state="normal")
-            verify_btn.configure(state="normal")
-            resend_btn.configure(state="normal")
-            status_local.set(msg)
-
-        def _ok(token: str) -> None:
-            if is_seller:
-                self._apply_seller_token(token, True)
-            else:
-                self._apply_token(token, True)
-            _on_close()
-
-        def _show_mfa(challenge: BuyerMfaRequired) -> None:
-            # Keep THIS window. Turn the password box into the code box so it
-            # cannot hide below the "check your email" status line.
-            mfa_state["token"] = challenge.mfatoken
-            mfa_state["channel"] = "email"
-            mfa_state["password"] = password_var.get()
-            otp_var.set("")
-            password_var.set("")
-            try:
-                pw_label.configure(text="Paste the 6-digit code from your email")
-                password_entry.configure(show="")
-            except Exception:
-                pass
-            try:
-                hint_lbl.configure(
-                    text="Password worked. Check your email for the code, then type it in the box below."
-                )
-            except Exception:
-                pass
-            sign_btn.configure(state="normal", text="Verify code")
-            status_local.set("Sending a code to your email…")
-            _send_mfa("email")
-            try:
-                password_entry.focus_set()
-            except Exception:
-                pass
-
-        def _send_mfa(channel: str, *, resend: bool = False) -> None:
-            token = mfa_state.get("token") or ""
-            if not token:
-                status_local.set("Sign in with email and password first.")
-                return
-            mfa_state["channel"] = channel
-            email_code_btn.configure(state="disabled")
-            sms_code_btn.configure(state="disabled")
-            resend_btn.configure(state="disabled")
-            status_local.set("Sending code…")
-
-            def work() -> None:
-                try:
-                    send_buyer_mfa_otp(token, channel, resend=resend)
-                except Exception as exc:
-                    msg = str(exc) or type(exc).__name__
-                    self.root.after(0, lambda m=msg: _fail(m))
-                    return
-                where = "email" if channel == "email" else "phone"
-
-                def _sent() -> None:
-                    _fail("")
-                    status_local.set(f"Check your {where} — type the 6-digit code in the Password box, then Verify code.")
-                    password_entry.focus_set()
-
-                self.root.after(0, _sent)
-
-            threading.Thread(target=work, daemon=True).start()
-
-        def _verify_mfa(_event=None) -> None:
-            token = mfa_state.get("token") or ""
-            if not token:
-                return
-            code = otp_var.get().strip() or password_var.get().strip()
-            if not code:
-                status_local.set("Type the 6-digit code in the box under your email.")
-                return
-            verify_btn.configure(state="disabled")
-            status_local.set("Checking code…")
-
-            def work() -> None:
-                try:
-                    access = verify_buyer_mfa(token, code, trusted=trust_var.get())
-                    _save_creds()
-                except Exception as exc:
-                    msg = str(exc) or type(exc).__name__
-                    self.root.after(0, lambda m=msg: _fail(m))
-                    return
-                self.root.after(0, lambda t=access: _ok(t))
-
-            threading.Thread(target=work, daemon=True).start()
-
-        def submit(_event=None) -> None:
-            if mfa_state.get("token"):
-                _verify_mfa()
-                return
-            email = email_var.get().strip()
-            password = password_var.get()
-            if not email or not password:
-                status_local.set("Enter email and password.")
-                return
-            sign_btn.configure(state="disabled")
-            status_local.set("Signing in…")
-
-            def work() -> None:
-                try:
-                    access = login_with_password(kind, email, password)
-                    _save_creds()
-                except BuyerMfaRequired as challenge:
-                    self.root.after(0, lambda c=challenge: _show_mfa(c))
-                    return
-                except Exception as exc:
-                    msg = str(exc) or type(exc).__name__
-                    self.root.after(0, lambda m=msg: _fail(m))
-                    return
-                self.root.after(0, lambda t=access: _ok(t))
-
-            threading.Thread(target=work, daemon=True).start()
-
-        email_code_btn.configure(command=lambda: _send_mfa("email"))
-        sms_code_btn.configure(
-            command=lambda: _send_mfa("sms"),
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT,
-        )
-        verify_btn.configure(command=_verify_mfa)
-        resend_btn.configure(
-            command=lambda: _send_mfa(mfa_state.get("channel") or "email", resend=True)
-        )
-        sign_btn.configure(command=submit)
-        win.bind("<Return>", submit)
-        if email_var.get():
-            password_entry.focus_set()
-        else:
-            email_entry.focus_set()
-
-    def _browser_sign_in(self, kind: str, close_dialog) -> None:
-        close_dialog()
+    def _browser_sign_in(self, kind: str) -> None:
+        """Open the real sign-in page. The one-time code is entered there, not in this app."""
+        if kind in self._browser_signin_busy:
+            self.status_var.set("That sign-in window is already open.")
+            return
+        self._browser_signin_busy.add(kind)
         if kind == "seller":
-            self.status_var.set("Opening CT Seller — sign in, then close the browser window.")
+            self.status_var.set(
+                "Opening CT Seller in the browser. Sign in on that page, including the one-time code, then close the window."
+            )
+        elif kind == "estateez":
+            self.status_var.set(
+                "Opening Estate-Ez in the browser. Sign in on that page, then close the window."
+            )
         else:
-            self.status_var.set("Opening CTBids — sign in as buyer, then close the browser window.")
+            self.status_var.set(
+                "Opening CTBids in the browser. Sign in on that page, including the one-time code, then close the window."
+            )
         self.root.update_idletasks()
         sale = self.sale_var.get().strip() or "https://ctbids.com/"
 
@@ -4506,18 +4072,86 @@ class WatcherApp:
                         self.root.after(0, self._apply_seller_token, token, False)
 
                     token = open_seller_login_window(on_tokens=captured)
-                    self.root.after(0, self._apply_seller_token, token, True)
+                    self.root.after(0, self._finish_browser_sign_in, "seller", token)
+                elif kind == "estateez":
+                    try:
+                        from auth import open_estate_ez_login_window
+                    except ImportError:  # noqa: BLE001 - package vs script import
+                        from sale_watcher.auth import open_estate_ez_login_window
+
+                    def captured_ee(token: str) -> None:
+                        self.root.after(0, self._finish_browser_sign_in, "estateez", token)
+
+                    token = open_estate_ez_login_window(on_token=captured_ee)
+                    self.root.after(0, self._finish_browser_sign_in, "estateez", token)
                 else:
                     def captured(token: str) -> None:
                         self.root.after(0, self._apply_token, token, False)
 
                     token = open_login_window(sale, on_tokens=captured)
-                    self.root.after(0, self._apply_token, token, True)
+                    self.root.after(0, self._finish_browser_sign_in, "buyer", token)
             except Exception as exc:
                 msg = str(exc) or type(exc).__name__
                 self.root.after(0, lambda m=msg: messagebox.showerror(APP_TITLE, m))
+            finally:
+                self.root.after(0, self._browser_signin_busy.discard, kind)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _finish_browser_sign_in(self, kind: str, token: str | None) -> None:
+        if not token:
+            if kind == "seller":
+                self.status_var.set(
+                    "CT Seller window closed before sign-in finished. Sign in on the page, then close the window."
+                )
+            elif kind == "estateez":
+                self.status_var.set(
+                    "Estate-Ez window closed before sign-in finished. Sign in on the page, then close the window."
+                )
+            else:
+                self.status_var.set(
+                    "CTBids window closed before sign-in finished. Sign in on the page, then close the window."
+                )
+            return
+        if kind == "seller":
+            self._apply_seller_token(token, True)
+            return
+        if kind == "buyer":
+            self._apply_token(token, True)
+            return
+        self._finish_estate_ez_sign_in(token)
+
+    def _finish_estate_ez_sign_in(self, token: str) -> None:
+        self.estate_ez_token = token
+        self._refresh_login_badge()
+        try:
+            from estate_ez import fetch_ctseller_session
+        except ImportError:  # noqa: BLE001 - package vs script import
+            from sale_watcher.estate_ez import fetch_ctseller_session
+        try:
+            session = fetch_ctseller_session(token)
+        except EstateEzSellerNotConnected as exc:
+            note = str(exc) or "Estate-Ez signed in. Connect CT Seller on Account, then sign in again."
+            self.status_var.set(note)
+            self._append_activity(note, kind="info")
+            return
+        except EstateEzAuthError as exc:
+            self.estate_ez_token = load_estate_ez_token()
+            self._refresh_login_badge()
+            note = str(exc) or "Estate-Ez did not keep that sign-in. Close the window after the page finishes signing in."
+            self.status_var.set(note)
+            self._append_activity(note, kind="info")
+            return
+        except Exception as exc:
+            note = f"Estate-Ez signed in. Seller session was not loaded ({exc})."
+            self.status_var.set(note)
+            self._append_activity("Estate-Ez signed in.", kind="info")
+            return
+        access = str(session.get("access_token") or "") or None
+        if access:
+            self._apply_seller_token(access, False)
+        self.status_var.set("Estate-Ez signed in. CT Seller session loaded from your account.")
+        self._append_activity("Estate-Ez signed in. CT Seller session loaded from your account.", kind="info")
 
     def _open_sale(self) -> None:
         url = self.sale_var.get().strip()

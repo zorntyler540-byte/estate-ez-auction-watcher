@@ -27,9 +27,9 @@ HOW TO USE
 1. Paste your sale link, e.g.
    https://ctbids.com/estate-sale/46500
 
-2. Click "Sign in to CTBids".
-   A Chrome window opens — sign in with the boss account,
-   then close that window.
+2. Click "Buyer sign in".
+   A browser window opens ctbids.com — sign in on that page,
+   including any one-time code, then close that window.
 
 3. Click "Start watching".
    It refreshes on the interval you set (default 45 seconds).

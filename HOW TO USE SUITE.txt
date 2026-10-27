@@ -18,18 +18,18 @@ IF YOU RECEIVED THE ZIP
 
 LIVE WATCH
 ----------
-1. Estate-Ez sign in — same email/password as the Estate-Ez website.
+1. Estate-Ez sign in — opens the Estate-Ez website. Sign in on that page.
    If CT Seller is connected on Account there, Watcher loads that Seller
-   session automatically (no second Seller login).
-2. Buyer sign in — CTBids buyer email/password for live usernames, or
-   “Use browser instead” if CTBids asks for a code. Finish the code in that
-   Chromium window, then close it.
+   session automatically (no second Seller login). Close the window when done.
+2. Buyer sign in — opens ctbids.com. Sign in on that page, including any
+   one-time code, then close the window (usernames + Suspended).
 3. Seller sign in is only needed if Estate-Ez does not have CT Seller
-   connected yet (password, or Use browser instead on seller.ctbids.com).
+   connected yet. It opens seller.ctbids.com — finish the code on that page,
+   then close the window.
    Live Watch then loads this franchise's active sales from CT Seller
    and fills the CTBids URL. If several sales are live, use the tabs
    (or Watch all). Paste a URL only if you need a sale that is not listed.
-   (Check Remember on this PC. Green checks stay on — sessions refresh automatically.)
+   Green checks stay on — sessions refresh automatically.
 4. Start watching (current tab) — or Watch all for every live sale
 5. Click a username to open their CT Seller page (suspend / notes / invoices).
    Switch Top bids to Risky bidders for this sale: lots they are high on here,

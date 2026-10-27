@@ -44,6 +44,8 @@ python -m PyInstaller --noconfirm --clean ^
   --hidden-import sale_watcher.app ^
   --hidden-import sale_watcher.watcher ^
   --hidden-import sale_watcher.auth ^
+  --hidden-import sale_watcher.estate_ez ^
+  --hidden-import sale_watcher.engagement_sync ^
   --hidden-import sale_watcher.ctbids_client ^
   --hidden-import sale_watcher.seller_client ^
   --hidden-import sale_watcher.export_report ^
