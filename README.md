@@ -14,7 +14,9 @@ copy .env.example .env
 python suite_app.py
 ```
 
-Local `config.json` and `.env` stay off git (franchise name and optional API overrides). CTBids / Estate-Ez passwords are stored on this PC only, not in the repo. Send-out zips use `config.franchise.json`.
+Sign-in buttons open the real Estate-Ez / CTBids / CT Seller pages so one-time codes are entered there, not in the app.
+
+Local `config.json` and `.env` stay off git (franchise name and optional API overrides). CTBids / Estate-Ez passwords stay on those websites and this PC, not in the repo. Send-out zips use `config.franchise.json`.
 
 ## Build a franchise zip
 

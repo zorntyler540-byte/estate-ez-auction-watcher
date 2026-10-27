@@ -47,8 +47,8 @@ IF YOU RECEIVED THE ZIP
 LIVE WATCH
 ----------
 1. Paste sale URL (https://ctbids.com/estate-sale/#####)
-2. Buyer sign in  (ctbids.com) — usernames + Suspended
-3. Seller sign in (seller.ctbids.com) — paid / unpaid counts
+2. Buyer sign in  (opens ctbids.com — OTP stays on that page) — usernames + Suspended
+3. Seller sign in (opens seller.ctbids.com — OTP stays on that page) — paid / unpaid counts
 4. Start watching
 5. Leave it running — it saves each lot's high bid as it closes, then a
    final CSV/HTML/PDF when the sale ends (Documents\Sale Reports\Live Snapshots).

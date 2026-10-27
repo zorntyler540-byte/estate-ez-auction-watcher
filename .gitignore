@@ -21,6 +21,8 @@ estate_ez_access_token.txt
 watcher_config.json
 browser_profile/
 seller_browser_profile/
+estate_ez_browser_profile/
+browser_channel.txt
 
 # Probe dumps can contain live CTBids bidder data if scripts are run
 *_probe_out*.json
