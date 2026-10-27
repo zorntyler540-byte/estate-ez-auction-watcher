@@ -28,7 +28,7 @@ class EngagementPayloadTests(unittest.TestCase):
             {
                 "itemid": 5667527,
                 "viewcount": 25,
-                "watchercount": 8,
+                "wishlistcount": 8,
                 "email": "winner@example.com",
                 "firstname": "Pat",
                 "lastname": "Lee",
@@ -51,6 +51,17 @@ class EngagementPayloadTests(unittest.TestCase):
         self.assertEqual(body["items"][0]["price"], 5)
         self.assertEqual(body["ctseller_sale_id"], 48212)
         self.assertNotIn("high_bidder", body["items"][0])
+
+    def test_watchercount_alias_still_counts(self) -> None:
+        item = LiveItem(item_id=1, title="Quilt", sku="MM500", bid_price=13, bid_count=1)
+        body = build_snapshot_body(
+            1,
+            [item],
+            [{"itemid": "1", "viewcount": "9", "watchercount": "3", "email": "hidden@example.com"}],
+        )
+        self.assertEqual(body["items"][0]["views"], 9)
+        self.assertEqual(body["items"][0]["watchers"], 3)
+        self.assertNotIn("hidden@example.com", json.dumps(body))
 
 
 if __name__ == "__main__":
