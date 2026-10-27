@@ -35,6 +35,7 @@ except ImportError:  # noqa: BLE001 - package vs script import
     )
 
 DEFAULT_API_BASE = "https://caringtransitions-ai-production.up.railway.app"
+DEFAULT_WEB_BASE = "https://sublime-delight-production.up.railway.app"
 LOGIN_KIND = "estateez"
 TIMEOUT = 30
 
@@ -45,6 +46,23 @@ class EstateEzAuthError(RuntimeError):
 
 class EstateEzSellerNotConnected(RuntimeError):
     """Estate-Ez account has no CT Seller credentials on Account."""
+
+
+def web_base() -> str:
+    """Estate-Ez website. Sign-in happens on this page, then Watcher reads the session."""
+    env = (os.environ.get("ESTATE_EZ_WEB_BASE") or "").strip().rstrip("/")
+    if env:
+        return env
+    cfg = watcher_data_dir() / "watcher_config.json"
+    if cfg.exists():
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            custom = str(data.get("estate_ez_web") or "").strip().rstrip("/")
+            if custom:
+                return custom
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+    return DEFAULT_WEB_BASE
 
 
 def api_base() -> str:

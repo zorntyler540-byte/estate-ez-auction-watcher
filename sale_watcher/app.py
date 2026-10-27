@@ -703,6 +703,7 @@ class WatcherApp:
         self.token: str | None = None
         self.seller_token: str | None = None
         self.estate_ez_token: str | None = load_estate_ez_token()
+        self._browser_signin_busy: set[str] = set()
         self.watcher: SaleWatcher | None = None
         self._sessions: dict[int, _WatchSession] = {}
         self._active_sale_id: int | None = None
@@ -722,6 +723,7 @@ class WatcherApp:
             "sku": "SKU",
             "item": "Item",
             "price": "Price",
+            "buynow": "Buy now",
             "reserve": "Reserve",
             "met": "Met",
             "left": "Time left",
@@ -733,11 +735,12 @@ class WatcherApp:
             "paid": "Paid invoices",
             "category": "Category",
         }
-        self._num_cols = ("price", "reserve", "met", "left", "bids")
+        self._num_cols = ("price", "buynow", "reserve", "met", "left", "bids")
         self._col_defaults = {
             "sku": (100, 56, "w"),
             "item": (260, 80, "w"),
             "price": (76, 56, "e"),
+            "buynow": (84, 64, "e"),
             "reserve": (76, 56, "e"),
             "met": (88, 64, "e"),
             "left": (80, 56, "e"),
@@ -1094,7 +1097,7 @@ class WatcherApp:
         self.table_wrap = table_host
 
         cols = (
-            "sku", "item", "price", "reserve", "met", "left", "bids",
+            "sku", "item", "price", "buynow", "reserve", "met", "left", "bids",
             "bidder", "status", "unpaid", "voids", "paid", "category", "view", "pad",
         )
         self.bids_tree = ttk.Treeview(
@@ -2543,6 +2546,7 @@ class WatcherApp:
             "price_up": (GREEN_SOFT, GREEN, "BID UP"),
             "bidder_change": (GREEN_SOFT, GREEN_DARK, "BIDDER"),
             "sold": (GREEN_SOFT, GREEN, "SOLD"),
+            "buy_now": (GREEN_SOFT, GREEN, "BOUGHT NOW"),
             "risk": (AMBER_SOFT, RED, "OPEN IN SELLER"),
             "info": (THEMES[self.theme_mode]["info_bg"], MUTED, "INFO"),
         }
@@ -3678,7 +3682,9 @@ class WatcherApp:
         else:
             self._sort_col = col
             # First click: high→low for money/counts; soonest-first for time; A→Z for text
-            self._sort_asc = col not in ("price", "reserve", "met", "bids", "unpaid", "voids", "paid")
+            self._sort_asc = col not in (
+                "price", "buynow", "reserve", "met", "bids", "unpaid", "voids", "paid",
+            )
         self._refresh_sort_headings()
         self._bids_fingerprint = ""
         self._render_bids()
@@ -3713,6 +3719,8 @@ class WatcherApp:
             return (item.sku or "").lower()
         if col == "price":
             return float(item.bid_price or 0)
+        if col == "buynow":
+            return float(item.buy_now_price or 0)
         if col == "reserve":
             return float(item.reserve_price or 0)
         if col == "met":
@@ -3744,7 +3752,7 @@ class WatcherApp:
         query = self.search_var.get().strip().lower()
         rows: list[LiveItem] = []
         for it in snap.items.values():
-            if mode == "bidding" and not it.has_bids:
+            if mode == "bidding" and not it.has_bids and it.buy_now_price <= 0:
                 continue
             if mode == "open" and (not it.is_open or it.has_bids):
                 continue
@@ -3799,6 +3807,7 @@ class WatcherApp:
     def _row_values(self, item: LiveItem) -> tuple[str, ...]:
         bidding = item.has_bids
         price = _money(item.bid_price) if bidding else "—"
+        buy_now = _money(item.buy_now_price) if item.buy_now_price > 0 else "—"
         left = format_time_left(item)
         bids = str(item.bid_count) if bidding else "—"
         bidder = item.high_bidder if item.high_bidder else ("—" if bidding else "")
@@ -3807,6 +3816,7 @@ class WatcherApp:
             item.sku or "—",
             item.title,
             price,
+            buy_now,
             format_reserve(item),
             format_met(item),
             left,
@@ -3863,7 +3873,8 @@ class WatcherApp:
         rows = self._filtered_rows(snap)
         fingerprint = "|".join(
             f"{it.item_id}:{it.bid_price}:{it.bid_count}:{it.high_bidder}:"
-            f"{it.account_status}:{it.item_status}:{it.close_time}:{it.reserve_price}"
+            f"{it.account_status}:{it.item_status}:{it.close_time}:{it.reserve_price}:"
+            f"{it.buy_now_price}:{int(it.bought_now)}"
             for it in rows
         )
         fingerprint = (
@@ -4045,13 +4056,13 @@ class WatcherApp:
         self._append_activity(message, kind="info")
 
     def _on_login(self) -> None:
-        self._open_sign_in_dialog("buyer")
+        self._browser_sign_in("buyer")
 
     def _on_seller_login(self) -> None:
-        self._open_sign_in_dialog("seller")
+        self._browser_sign_in("seller")
 
     def _on_estate_ez_login(self) -> None:
-        self._open_estate_ez_dialog()
+        self._browser_sign_in("estateez")
 
     def _open_estate_ez_dialog(self) -> None:
         existing = self._sign_in_windows.get("estateez")
@@ -4490,12 +4501,26 @@ class WatcherApp:
         else:
             email_entry.focus_set()
 
-    def _browser_sign_in(self, kind: str, close_dialog) -> None:
-        close_dialog()
+    def _browser_sign_in(self, kind: str, close_dialog=None) -> None:
+        """Open the real sign-in page. The one-time code is entered there, not in this app."""
+        if close_dialog:
+            close_dialog()
+        if kind in self._browser_signin_busy:
+            self.status_var.set("That sign-in window is already open.")
+            return
+        self._browser_signin_busy.add(kind)
         if kind == "seller":
-            self.status_var.set("Opening CT Seller — sign in, then close the browser window.")
+            self.status_var.set(
+                "Opening CT Seller in the browser. Sign in on that page, including the one-time code, then close the window."
+            )
+        elif kind == "estateez":
+            self.status_var.set(
+                "Opening Estate-Ez in the browser. Sign in on that page, then close the window."
+            )
         else:
-            self.status_var.set("Opening CTBids — sign in as buyer, then close the browser window.")
+            self.status_var.set(
+                "Opening CTBids in the browser. Sign in on that page, including the one-time code, then close the window."
+            )
         self.root.update_idletasks()
         sale = self.sale_var.get().strip() or "https://ctbids.com/"
 
@@ -4506,18 +4531,86 @@ class WatcherApp:
                         self.root.after(0, self._apply_seller_token, token, False)
 
                     token = open_seller_login_window(on_tokens=captured)
-                    self.root.after(0, self._apply_seller_token, token, True)
+                    self.root.after(0, self._finish_browser_sign_in, "seller", token)
+                elif kind == "estateez":
+                    try:
+                        from auth import open_estate_ez_login_window
+                    except ImportError:  # noqa: BLE001 - package vs script import
+                        from sale_watcher.auth import open_estate_ez_login_window
+
+                    def captured_ee(token: str) -> None:
+                        self.root.after(0, self._finish_browser_sign_in, "estateez", token)
+
+                    token = open_estate_ez_login_window(on_token=captured_ee)
+                    self.root.after(0, self._finish_browser_sign_in, "estateez", token)
                 else:
                     def captured(token: str) -> None:
                         self.root.after(0, self._apply_token, token, False)
 
                     token = open_login_window(sale, on_tokens=captured)
-                    self.root.after(0, self._apply_token, token, True)
+                    self.root.after(0, self._finish_browser_sign_in, "buyer", token)
             except Exception as exc:
                 msg = str(exc) or type(exc).__name__
                 self.root.after(0, lambda m=msg: messagebox.showerror(APP_TITLE, m))
+            finally:
+                self.root.after(0, self._browser_signin_busy.discard, kind)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _finish_browser_sign_in(self, kind: str, token: str | None) -> None:
+        if not token:
+            if kind == "seller":
+                self.status_var.set(
+                    "CT Seller window closed before sign-in finished. Sign in on the page, then close the window."
+                )
+            elif kind == "estateez":
+                self.status_var.set(
+                    "Estate-Ez window closed before sign-in finished. Sign in on the page, then close the window."
+                )
+            else:
+                self.status_var.set(
+                    "CTBids window closed before sign-in finished. Sign in on the page, then close the window."
+                )
+            return
+        if kind == "seller":
+            self._apply_seller_token(token, True)
+            return
+        if kind == "buyer":
+            self._apply_token(token, True)
+            return
+        self._finish_estate_ez_sign_in(token)
+
+    def _finish_estate_ez_sign_in(self, token: str) -> None:
+        self.estate_ez_token = token
+        self._refresh_login_badge()
+        try:
+            from estate_ez import fetch_ctseller_session
+        except ImportError:  # noqa: BLE001 - package vs script import
+            from sale_watcher.estate_ez import fetch_ctseller_session
+        try:
+            session = fetch_ctseller_session(token)
+        except EstateEzSellerNotConnected as exc:
+            note = str(exc) or "Estate-Ez signed in. Connect CT Seller on Account, then sign in again."
+            self.status_var.set(note)
+            self._append_activity(note, kind="info")
+            return
+        except EstateEzAuthError as exc:
+            self.estate_ez_token = load_estate_ez_token()
+            self._refresh_login_badge()
+            note = str(exc) or "Estate-Ez did not keep that sign-in. Close the window after the page finishes signing in."
+            self.status_var.set(note)
+            self._append_activity(note, kind="info")
+            return
+        except Exception as exc:
+            note = f"Estate-Ez signed in. Seller session was not loaded ({exc})."
+            self.status_var.set(note)
+            self._append_activity("Estate-Ez signed in.", kind="info")
+            return
+        access = str(session.get("access_token") or "") or None
+        if access:
+            self._apply_seller_token(access, False)
+        self.status_var.set("Estate-Ez signed in. CT Seller session loaded from your account.")
+        self._append_activity("Estate-Ez signed in. CT Seller session loaded from your account.", kind="info")
 
     def _open_sale(self) -> None:
         url = self.sale_var.get().strip()
@@ -4869,6 +4962,10 @@ class WatcherApp:
                 if ch.item.high_bidder:
                     msg += f" · {ch.item.high_bidder}"
                 focus_ids.append(ch.item.item_id)
+            elif ch.kind == "buy_now":
+                paid = ch.item.bid_price or ch.item.buy_now_price
+                msg = f"{title}\nBought now {_money(paid)}"
+                focus_ids.append(ch.item.item_id)
             else:
                 msg = ch.message
             buyer_id = int(ch.item.buyer_id or 0)
@@ -4928,6 +5025,8 @@ class WatcherApp:
                 )
             elif ch.kind == "sold":
                 _toast(ch.item.sku or "Sold", f"{sale_bit}{ch.message}")
+            elif ch.kind == "buy_now":
+                _toast("Bought now", f"{sale_bit}{ch.message}")
             elif ch.kind in ("first_bid", "price_up"):
                 toast_title = ch.item.sku or (sess.title if sess else "Estate-Ez Auction Watcher")
                 _toast(toast_title, f"{sale_bit}{ch.message}" if sale_bit else ch.message)

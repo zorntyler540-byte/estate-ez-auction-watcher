@@ -12,6 +12,7 @@ from ctbids_client import (
     CtbidsClient,
     HighBidderInfo,
     Snapshot,
+    apply_buy_now,
     build_snapshot,
     diff_snapshots,
     merge_bids,
@@ -141,6 +142,10 @@ class SaleWatcher:
         self._seller_auth_recovery_attempted = False
         self._end_snapshot_saved = False
         self._last_reserve: dict[int, float] = {}
+        self._last_buy_now: dict[int, float] = {}
+        self._last_item_type: dict[int, tuple[int, str]] = {}
+        self._bought_now: set[int] = set()
+        self._buy_now_signin_noted = False
         self._frozen: dict[int, dict] = {}
         self._live_csv_announced = False
 
@@ -371,6 +376,52 @@ class SaleWatcher:
         time.sleep(0.05)
         return unpaid, paid, voids, bidding
 
+    def _apply_seller_buy_now(self, items: list) -> None:
+        """Load Buy It Now prices. A seller outage must not stop the bid refresh."""
+        rows = None
+        if not self.seller.signed_in:
+            if not self._buy_now_signin_noted:
+                self._buy_now_signin_noted = True
+                self.say("Sign in to CT Seller to load Buy now prices.")
+        else:
+            try:
+                rows = self.seller.fetch_buy_now_items(self.sale_id)
+            except PermissionError:
+                if self._handle_seller_auth_lost():
+                    try:
+                        rows = self.seller.fetch_buy_now_items(self.sale_id)
+                    except Exception as exc:  # noqa: BLE001
+                        self.say(f"Buy now prices not loaded ({exc}).")
+            except Exception as exc:  # noqa: BLE001
+                self.say(f"Buy now prices not loaded ({exc}).")
+        seen: set[int] = set()
+        if rows is not None:
+            seen = apply_buy_now(items, rows)
+        self._remember_buy_now(items, seen)
+
+    def _remember_buy_now(self, items: list, seen: set[int]) -> None:
+        """Keep the last Buy It Now price when a later refresh omits the lot."""
+        for it in items:
+            if it.buy_now_price > 0:
+                self._last_buy_now[it.item_id] = float(it.buy_now_price)
+            elif self._last_buy_now.get(it.item_id, 0) > 0:
+                it.buy_now_price = self._last_buy_now[it.item_id]
+            if it.item_type_id or it.item_type_name:
+                self._last_item_type[it.item_id] = (int(it.item_type_id or 0), it.item_type_name or "")
+            elif it.item_id in self._last_item_type:
+                type_id, type_name = self._last_item_type[it.item_id]
+                it.item_type_id = type_id
+                it.item_type_name = type_name
+            if it.item_id in seen:
+                if it.bought_now:
+                    self._bought_now.add(it.item_id)
+                elif str(it.item_status or "").lower() != "sold":
+                    self._bought_now.discard(it.item_id)
+                elif it.item_id in self._bought_now:
+                    it.bought_now = True
+            elif it.item_id in self._bought_now:
+                it.bought_now = True
+
     def _freeze_closed_lots(self, items: list) -> int:
         """Lock in high bid / reserve the moment a lot is no longer open.
 
@@ -390,7 +441,15 @@ class SaleWatcher:
             best_reserve = max(it.reserve_price, float(prev["reserve_price"]) if prev else 0.0)
             bidder = it.high_bidder or (prev or {}).get("high_bidder") or ""
             status = it.item_status
-            if best_reserve > 0 and best_price < best_reserve and str(status).lower() == "sold":
+            # A Buy It Now purchase has no auction bid. CT still stores a reserve
+            # on some of those lots, and this rewrite would hide the sale as Not Sold.
+            purchased_now = bool(it.bought_now or it.is_direct_buy)
+            if (
+                best_reserve > 0
+                and best_price < best_reserve
+                and str(status).lower() == "sold"
+                and not purchased_now
+            ):
                 status = "Not Sold"
             it.bid_price = best_price
             it.bid_count = best_count
@@ -516,10 +575,14 @@ class SaleWatcher:
                 prev_res = self._last_reserve.get(it.item_id, 0.0)
                 if prev_res > 0:
                     it.reserve_price = prev_res
+        self._apply_seller_buy_now(items)
+        for it in items:
             bid_info = bids.get(it.item_id) or {}
             if (
                 it.is_open
                 and str(bid_info.get("bid_status") or "").lower() == "closed"
+                and not it.bought_now
+                and not it.is_direct_buy
             ):
                 if it.reserve_price > 0 and it.bid_price < it.reserve_price:
                     it.item_status = "Not Sold"
