@@ -34,14 +34,15 @@ HOW TO USE
    not in the list.
 
 2. Click "Buyer sign in".
-   A Chrome window opens — sign in on ctbids.com,
-   then close that window. (Usernames + Suspended tags.)
+   A browser window opens ctbids.com — sign in on that page,
+   including any one-time code, then close the window.
+   (Usernames + Suspended tags.)
    The green Buyer check can appear as soon as you are signed in;
    you still close the window when you are done.
 
 3. Click "Seller sign in".
-   Sign in on seller.ctbids.com with your franchise seller
-   account, then close that window.
+   A browser window opens seller.ctbids.com — sign in on that page,
+   including any one-time code, then close the window.
    (Unpaid invoice checks on all high bidders.)
 
    After the first sign-in, Estate-Ez Auction Watcher keeps both sessions alive

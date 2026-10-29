@@ -38,6 +38,10 @@ class LiveItem:
     items_bid_count: int | None = None  # CT Seller "Items Currently Bidding"
     suspended_here: bool = False  # active suspend at THIS Seller login's locations
     link: str = ""
+    buy_now_price: float = 0.0  # active Direct / Buy It Now asking price; 0 = none
+    item_type_id: int = 0  # 1 Direct buy, 2 Auction, 3 Onsite
+    item_type_name: str = ""
+    bought_now: bool = False  # seller says this lot sold through Buy It Now
 
     @property
     def is_open(self) -> bool:
@@ -54,6 +58,12 @@ class LiveItem:
     @property
     def has_bids(self) -> bool:
         return self.bid_price > 0 or self.bid_count > 0
+
+    @property
+    def is_direct_buy(self) -> bool:
+        if int(self.item_type_id or 0) == 1:
+            return True
+        return (self.item_type_name or "").strip().lower() == "direct buy"
 
     @property
     def has_unpaid(self) -> bool:
@@ -120,6 +130,10 @@ class LiveItem:
             "items_bid_count": self.items_bid_count,
             "account_status": self.account_status,
             "link": self.link,
+            "buy_now_price": self.buy_now_price,
+            "item_type_id": self.item_type_id,
+            "item_type_name": self.item_type_name,
+            "bought_now": self.bought_now,
         }
 
 
@@ -133,7 +147,7 @@ class HighBidderInfo:
 @dataclass
 class BidChange:
     item: LiveItem
-    kind: str  # new_bid | price_up | bidder_change | first_bid | sold
+    kind: str  # new_bid | price_up | bidder_change | first_bid | sold | buy_now
     old_price: float = 0.0
     old_bidder: str = ""
     message: str = ""
@@ -180,6 +194,18 @@ def item_link(sale_id: int, item: LiveItem) -> str:
     if item.seo_url:
         return f"{SITE}/estate-sale/{sale_id}/item/{item.item_id}/{item.seo_url}"
     return f"{SITE}/estate-sale/{sale_id}/item/{item.item_id}"
+
+
+def _row_int(row: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        raw = row.get(key)
+        if raw is None or str(raw).strip() in ("", "None", "nan"):
+            continue
+        try:
+            return int(float(raw))
+        except (TypeError, ValueError):
+            continue
+    return 0
 
 
 def _row_money(row: dict[str, Any], *keys: str) -> float:
@@ -268,6 +294,8 @@ class CtbidsClient:
                     thumbnail=str(row.get("thumbnailurl") or "").strip(),
                     item_status=status or "Ready",
                     reserve_price=_row_money(row, "reserveprice", "reservePrice"),
+                    item_type_id=_row_int(row, "itemtypeid", "itemTypeId"),
+                    item_type_name=str(row.get("itemtypename") or row.get("itemtype") or "").strip(),
                 )
                 live.link = item_link(sale_id, live)
                 items.append(live)
@@ -427,6 +455,87 @@ class CtbidsClient:
         return self.token_status() == "ok"
 
 
+def _seller_row_id(row: dict[str, Any]) -> int:
+    return _row_int(row, "id", "itemid", "item_id")
+
+
+def _buy_now_hammer(item: LiveItem, ask: float, sold_amount: float) -> float:
+    """Price CT Seller shows after a Buy It Now purchase.
+
+    Direct buy uses the asking price. Other sold lots use the sold amount,
+    then the asking price when the bid feed never recorded a hammer.
+    """
+    if item.is_direct_buy and ask > 0:
+        return ask
+    if sold_amount > 0:
+        return sold_amount
+    if ask > 0:
+        return ask
+    return 0.0
+
+
+def _is_buy_now_purchase(item: LiveItem, ask: float, sold_amount: float) -> bool:
+    """True when this Sold row closed on the Buy It Now button, not an auction bid."""
+    if item.is_direct_buy:
+        return True
+    if ask <= 0:
+        return False
+    if item.bid_count <= 0 and item.bid_price <= 0:
+        return True
+    hammer = sold_amount or ask
+    return hammer > 0 and abs(hammer - ask) < 0.01 and item.bid_price + 0.01 < ask
+
+
+def apply_buy_now(items: list[LiveItem], rows: list[dict[str, Any]]) -> set[int]:
+    """Copy Buy It Now prices from the seller item list onto live lots.
+
+    An active asking price fills ``buy_now_price`` only. A completed purchase
+    marks the lot Sold and, when the bid feed has no hammer, copies that
+    amount into ``bid_price`` so the Price column updates.
+
+    Returns the item ids present in ``rows``. Bidder identity on those rows
+    is ignored.
+    """
+    by_id: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        item_id = _seller_row_id(row)
+        if item_id:
+            by_id[item_id] = row
+    seen: set[int] = set()
+    for item in items:
+        row = by_id.get(item.item_id)
+        if row is None:
+            continue
+        seen.add(item.item_id)
+        type_id = _row_int(row, "itemtypeid", "itemTypeId")
+        type_name = str(row.get("itemtypename") or row.get("itemtype") or "").strip()
+        if type_id:
+            item.item_type_id = type_id
+        if type_name:
+            item.item_type_name = type_name
+        ask = _row_money(row, "buynowprice", "buyNowPrice")
+        if ask > 0:
+            item.buy_now_price = ask
+        seller_status = str(row.get("itemstatus") or "").strip().lower()
+        if seller_status != "sold":
+            item.bought_now = False
+            continue
+        sold_amount = _row_money(row, "itemsoldprice", "soldprice")
+        item.item_status = "Sold"
+        if not _is_buy_now_purchase(item, ask, sold_amount):
+            item.bought_now = False
+            continue
+        item.bought_now = True
+        hammer = _buy_now_hammer(item, ask, sold_amount)
+        if hammer > 0 and (item.bid_price <= 0 or hammer > item.bid_price + 0.001):
+            item.bid_price = hammer
+        if item.buy_now_price <= 0 and hammer > 0:
+            item.buy_now_price = hammer
+    return seen
+
+
 def merge_bids(items: list[LiveItem], bids: dict[int, dict[str, Any]]) -> list[LiveItem]:
     for item in items:
         info = bids.get(item.item_id)
@@ -458,6 +567,27 @@ def build_snapshot(sale_id: int, items: list[LiveItem]) -> Snapshot:
     )
 
 
+def _sale_change(item: LiveItem, *, old_price: float = 0.0, old_bidder: str = "") -> BidChange:
+    price = item.bid_price or item.buy_now_price
+    who = f" · {item.high_bidder}" if item.high_bidder else ""
+    label = item.sku or item.title[:50]
+    if item.bought_now:
+        return BidChange(
+            item=item,
+            kind="buy_now",
+            old_price=old_price,
+            old_bidder=old_bidder,
+            message=f"BOUGHT NOW: {label} → ${price:,.2f}",
+        )
+    return BidChange(
+        item=item,
+        kind="sold",
+        old_price=old_price,
+        old_bidder=old_bidder,
+        message=f"SOLD: {label} → ${item.bid_price:,.2f}{who}",
+    )
+
+
 def diff_snapshots(old: Snapshot | None, new: Snapshot) -> list[BidChange]:
     if old is None:
         return []
@@ -474,18 +604,8 @@ def diff_snapshots(old: Snapshot | None, new: Snapshot) -> list[BidChange]:
                         + (f" ({item.high_bidder})" if item.high_bidder else ""),
                     )
                 )
-            elif item.is_sold and item.has_bids:
-                changes.append(
-                    BidChange(
-                        item=item,
-                        kind="sold",
-                        old_price=item.bid_price,
-                        message=(
-                            f"SOLD: {item.sku or item.title[:50]} → ${item.bid_price:,.2f}"
-                            + (f" · {item.high_bidder}" if item.high_bidder else "")
-                        ),
-                    )
-                )
+            elif item.is_sold and (item.has_bids or item.bought_now):
+                changes.append(_sale_change(item, old_price=item.bid_price))
             continue
 
         became_sold = item.is_sold and not prev.is_sold
@@ -500,16 +620,7 @@ def diff_snapshots(old: Snapshot | None, new: Snapshot) -> list[BidChange]:
 
         if became_sold:
             changes.append(
-                BidChange(
-                    item=item,
-                    kind="sold",
-                    old_price=prev.bid_price,
-                    old_bidder=prev.high_bidder,
-                    message=(
-                        f"SOLD: {item.sku or item.title[:50]} → ${item.bid_price:,.2f}"
-                        + (f" · {item.high_bidder}" if item.high_bidder else "")
-                    ),
-                )
+                _sale_change(item, old_price=prev.bid_price, old_bidder=prev.high_bidder)
             )
         elif first:
             changes.append(

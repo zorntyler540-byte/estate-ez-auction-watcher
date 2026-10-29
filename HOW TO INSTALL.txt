@@ -52,9 +52,9 @@ LOGINS (each franchise uses their own)
   Seller = that franchise’s seller.ctbids.com account
 Logins are saved on that PC only (not inside the zip).
 
-If CTBids asks for an email/text code (new PC), click
-“Use browser instead”, finish the code on the CTBids page,
-then close that Chromium window. Do not sign in in Edge/Chrome.
+Click Estate-Ez / Buyer / Seller sign in. A browser window opens the
+real website. Enter email, password, and any one-time code on that
+page, then close the window.
 
 UPDATES
 -------

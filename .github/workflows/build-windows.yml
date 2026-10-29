@@ -1,0 +1,55 @@
+name: Build Windows Watcher
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/browser-signin-otp-6891
+      - cursor/watcher-merge-live-56bd
+
+jobs:
+  zip:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install app dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Build the app
+        run: python -m PyInstaller --noconfirm --clean "Estate-Ez Auction Watcher.spec"
+
+      - name: Bundle Chromium, config, and instructions
+        shell: pwsh
+        run: |
+          python -m playwright install chromium
+          $src = Join-Path $env:USERPROFILE "AppData\Local\ms-playwright"
+          if (-not (Test-Path $src)) {
+            throw "Playwright Chromium was not installed at $src"
+          }
+          $dest = "dist\Estate-Ez Auction Watcher"
+          if (-not (Test-Path "$dest\Estate-Ez Auction Watcher.exe")) {
+            throw "Built exe was not found in $dest"
+          }
+          Copy-Item $src "$dest\ms-playwright" -Recurse
+          Copy-Item "config.franchise.json" "$dest\config.json"
+          Copy-Item "config.franchise.json" "$dest\config.franchise.json"
+          Copy-Item "HOW TO INSTALL.txt" "$dest\HOW TO INSTALL.txt"
+          Copy-Item "HOW TO USE SUITE.txt" "$dest\HOW TO USE.txt"
+
+      - name: Zip the folder
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\Estate-Ez Auction Watcher" -DestinationPath "Estate-Ez-Auction-Watcher.zip" -CompressionLevel Optimal
+          Get-Item "Estate-Ez-Auction-Watcher.zip" | Select-Object FullName, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Estate-Ez-Auction-Watcher
+          path: Estate-Ez-Auction-Watcher.zip
+          if-no-files-found: error
+          retention-days: 14
