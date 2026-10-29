@@ -70,13 +70,18 @@ def _int(value: Any) -> int:
         return 0
 
 
-def _attention(row: dict[str, Any]) -> tuple[int, int]:
-    views = _int(row.get("viewcount"))
-    watchers = 0
-    for key in ("watchercount", "watcher_count", "watchcount"):
+def _first_count(row: dict[str, Any], keys: tuple[str, ...]) -> int:
+    for key in keys:
         if row.get(key) not in (None, ""):
-            watchers = _int(row.get(key))
-            break
+            return _int(row.get(key))
+    return 0
+
+
+def _attention(row: dict[str, Any]) -> tuple[int, int]:
+    # CT Seller's active-sale report names these viewcount and wishlistcount
+    # ("Number of Views" / "Number of Watchers" on the sheet).
+    views = _first_count(row, ("viewcount", "views"))
+    watchers = _first_count(row, ("wishlistcount", "watchercount", "watcher_count", "watchcount"))
     return views, watchers
 
 
@@ -128,11 +133,17 @@ def build_snapshot_body(
         if not isinstance(row, dict):
             continue
         try:
-            item_id = int(row.get("itemid") or row.get("item_id") or 0)
+            item_id = int(row.get("itemid") or row.get("item_id") or row.get("id") or 0)
         except (TypeError, ValueError):
             continue
-        if item_id:
-            attention[item_id] = _attention(row)
+        if not item_id:
+            continue
+        views, watchers = _attention(row)
+        prev = attention.get(item_id)
+        if prev is None:
+            attention[item_id] = (views, watchers)
+        else:
+            attention[item_id] = (max(prev[0], views), max(prev[1], watchers))
     public_items = []
     for item in items:
         views, watchers = attention.get(int(item.item_id), (0, 0))
@@ -189,7 +200,12 @@ def push_sale_snapshot(sale_id: int, snap: Snapshot, seller: Any) -> str:
         return "Sign in to Estate-Ez to send the engagement snapshot."
     if seller is None or not getattr(seller, "signed_in", False):
         return "CT Seller is not signed in, so views and watchers were not sent."
-    history = seller.fetch_sale_history_items(int(sale_id))
+    try:
+        history = seller.fetch_active_sale_items(int(sale_id))
+    except PermissionError:
+        raise
+    except Exception:
+        history = seller.fetch_sale_history_items(int(sale_id))
     body = build_snapshot_body(int(sale_id), items, history if isinstance(history, list) else [])
     if not body["items"]:
         return ""

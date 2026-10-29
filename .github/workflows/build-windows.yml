@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - cursor/browser-signin-otp-6891
+      - cursor/watcher-merge-live-56bd
 
 jobs:
   zip:
