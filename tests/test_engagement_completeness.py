@@ -137,16 +137,23 @@ class SendCompleteFlagTests(TempHomeTestCase):
     def _write_config(self, data: dict) -> None:
         (self.data_dir / "watcher_config.json").write_text(json.dumps(data), encoding="utf-8")
 
-    def test_off_by_default(self) -> None:
-        self.assertFalse(engagement_sync.send_complete_enabled())
+    def test_on_by_default(self) -> None:
+        self.assertTrue(engagement_sync.send_complete_enabled())
         self._write_config({"poll_seconds": 45})
+        self.assertTrue(engagement_sync.send_complete_enabled())
+
+    def test_config_false_turns_it_off(self) -> None:
+        self._write_config({"engagement_send_complete": False})
         self.assertFalse(engagement_sync.send_complete_enabled())
 
-    def test_config_flag_turns_it_on(self) -> None:
+    def test_config_true_still_enables_explicitly(self) -> None:
         self._write_config({"engagement_send_complete": True})
         self.assertTrue(engagement_sync.send_complete_enabled())
 
     def test_env_var_wins_over_config(self) -> None:
+        self._write_config({"engagement_send_complete": False})
+        with mock.patch.dict(os.environ, {"ESTATE_EZ_SEND_COMPLETE": "1"}):
+            self.assertTrue(engagement_sync.send_complete_enabled())
         self._write_config({"engagement_send_complete": True})
         with mock.patch.dict(os.environ, {"ESTATE_EZ_SEND_COMPLETE": "0"}):
             self.assertFalse(engagement_sync.send_complete_enabled())
@@ -154,9 +161,9 @@ class SendCompleteFlagTests(TempHomeTestCase):
             self._write_config({})
             self.assertTrue(engagement_sync.send_complete_enabled())
 
-    def test_broken_config_stays_off(self) -> None:
+    def test_broken_config_defaults_on(self) -> None:
         (self.data_dir / "watcher_config.json").write_text("{not json", encoding="utf-8")
-        self.assertFalse(engagement_sync.send_complete_enabled())
+        self.assertTrue(engagement_sync.send_complete_enabled())
 
 
 class FakeSeller:
@@ -212,12 +219,16 @@ class PushSaleSnapshotTests(TempHomeTestCase):
         body = self.posted[0]
         self.assertEqual(body["captured_at"], T0.isoformat())
         self.assertEqual({row["ctseller_item_id"] for row in body["items"]}, {1, 2})
-        self.assertNotIn("complete", body)
+        self.assertIs(body["complete"], True)
 
-    def test_complete_is_sent_when_flag_is_on(self) -> None:
-        with mock.patch.dict(os.environ, {"ESTATE_EZ_SEND_COMPLETE": "1"}):
-            engagement_sync.push_sale_snapshot(48212, self._snap(T0), self._seller())
+    def test_complete_is_sent_by_default(self) -> None:
+        engagement_sync.push_sale_snapshot(48212, self._snap(T0), self._seller())
         self.assertIs(self.posted[0]["complete"], True)
+
+    def test_complete_omitted_when_disabled_via_env(self) -> None:
+        with mock.patch.dict(os.environ, {"ESTATE_EZ_SEND_COMPLETE": "0"}):
+            engagement_sync.push_sale_snapshot(48212, self._snap(T0), self._seller())
+        self.assertNotIn("complete", self.posted[0])
 
     def test_partial_note_when_attention_is_missing(self) -> None:
         seller = FakeSeller(listed={48212}, history=[], report=_full(0))
