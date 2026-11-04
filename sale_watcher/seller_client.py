@@ -10,8 +10,10 @@ import requests
 
 try:
     from ctbids_client import FetchReport, finish_report, page_total
+    from http_retry import DEFAULT, QUICK, WRITE, RetryPolicy, describe_url, request_with_retry
 except ImportError:  # noqa: BLE001 - package vs script import
     from sale_watcher.ctbids_client import FetchReport, finish_report, page_total
+    from sale_watcher.http_retry import DEFAULT, QUICK, WRITE, RetryPolicy, describe_url, request_with_retry
 
 SELLER_API = "https://seller.ctbids.com/services/api/v1"
 SELLER_SITE = "https://seller.ctbids.com"
@@ -120,14 +122,31 @@ class SellerClient:
     def signed_in(self) -> bool:
         return bool(self.access_token)
 
+    def _call(
+        self,
+        method: str,
+        url: str,
+        *,
+        policy: RetryPolicy = DEFAULT,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """One CT Seller request through the shared retry helper (429 / 5xx / network only)."""
+        return request_with_retry(
+            lambda: getattr(self.session, method)(url, **kwargs),
+            policy=policy,
+            label=f"CT Seller {describe_url(method, url)}",
+        )
+
     def token_status(self) -> str:
         """'ok', 'unauthorized', or 'unknown' (network/timeout — do not log out)."""
         if not self.access_token:
             return "unauthorized"
         try:
             # POST location/list 401s for some roles; GET list is a cheap auth check.
-            resp = self.session.get(
+            resp = self._call(
+                "get",
                 f"{SELLER_API}/location/list",
+                policy=QUICK,
                 timeout=min(8.0, self.timeout),
             )
             if resp.status_code in (401, 403):
@@ -144,7 +163,8 @@ class SellerClient:
         """Invoice paid/unpaid counts for a buyer (same source as CT Seller buyer profile)."""
         if not self.access_token or not buyer_id:
             return None
-        resp = self.session.post(
+        resp = self._call(
+            "post",
             f"{SELLER_API}/buyer/detail/view/{int(buyer_id)}",
             json={
                 "field": [
@@ -207,7 +227,8 @@ class SellerClient:
         """How many Void invoices CT Seller shows on this buyer's invoice tab."""
         if not self.access_token or not buyer_id:
             return 0
-        resp = self.session.post(
+        resp = self._call(
+            "post",
             f"{SELLER_API}/invoice/list",
             data=json.dumps(
                 {
@@ -248,7 +269,8 @@ class SellerClient:
         """Franchise locations this seller login can suspend at."""
         if not self.access_token:
             raise PermissionError("CT Seller login expired or missing. Sign in to Seller again.")
-        resp = self.session.post(
+        resp = self._call(
+            "post",
             f"{SELLER_API}/location/list",
             data=json.dumps({"field": ["id", "title"]}),
             timeout=self.timeout,
@@ -256,7 +278,7 @@ class SellerClient:
         if resp.status_code in (401, 403):
             raise PermissionError("CT Seller login expired or missing. Sign in to Seller again.")
         if resp.status_code >= 400:
-            resp = self.session.get(f"{SELLER_API}/location/list", timeout=self.timeout)
+            resp = self._call("get", f"{SELLER_API}/location/list", timeout=self.timeout)
             if resp.status_code in (401, 403):
                 raise PermissionError("CT Seller login expired or missing. Sign in to Seller again.")
         resp.raise_for_status()
@@ -289,7 +311,8 @@ class SellerClient:
         owned = self.owned_location_id_set()
         if not owned:
             return False
-        resp = self.session.post(
+        resp = self._call(
+            "post",
             f"{SELLER_API}/buyer/suspend/list",
             data=json.dumps(
                 {
@@ -337,7 +360,8 @@ class SellerClient:
                 "locationtitle",
             ]
         }
-        resp = self.session.post(
+        resp = self._call(
+            "post",
             f"{SELLER_API}/sale/list",
             data=json.dumps(body),
             timeout=self.timeout,
@@ -345,7 +369,7 @@ class SellerClient:
         if resp.status_code in (401, 403):
             raise PermissionError("CT Seller login expired or missing. Sign in to Seller again.")
         if resp.status_code >= 400:
-            resp = self.session.get(f"{SELLER_API}/sale/list", timeout=self.timeout)
+            resp = self._call("get", f"{SELLER_API}/sale/list", timeout=self.timeout)
             if resp.status_code in (401, 403):
                 raise PermissionError("CT Seller login expired or missing. Sign in to Seller again.")
         resp.raise_for_status()
@@ -423,7 +447,8 @@ class SellerClient:
                 ],
                 "page": page,
             }
-            resp = self.session.post(
+            resp = self._call(
+                "post",
                 f"{SELLER_API}/report/sale/item/list",
                 data=json.dumps(body),
                 timeout=90,
@@ -549,8 +574,10 @@ class SellerClient:
             }
             for lid, _title in owned
         ]
-        resp = self.session.post(
+        resp = self._call(
+            "post",
             f"{SELLER_API}/buyer/suspend",
+            policy=WRITE,
             data=json.dumps({"data": {"locations": locations, "alllocations": False}}),
             timeout=self.timeout,
         )
@@ -573,8 +600,10 @@ class SellerClient:
         if not reason:
             raise RuntimeError("Enter a reason (shown in CT Seller).")
         owned = self.require_owned_locations()
-        resp = self.session.put(
+        resp = self._call(
+            "put",
             f"{SELLER_API}/buyer/suspend/revoke",
+            policy=WRITE,
             data=json.dumps(
                 {
                     "data": {
@@ -596,7 +625,7 @@ class SellerClient:
             raise PermissionError("CT Seller login expired or missing. Sign in to Seller again.")
         if self._connected_buyer_token:
             return self._connected_buyer_token
-        resp = self.session.get(f"{SELLER_API}/seller/buyer/token", timeout=self.timeout)
+        resp = self._call("get", f"{SELLER_API}/seller/buyer/token", timeout=self.timeout)
         if resp.status_code in (401, 403):
             raise PermissionError("CT Seller login expired or missing. Sign in to Seller again.")
         resp.raise_for_status()
@@ -639,21 +668,20 @@ class SellerClient:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.fetch_connected_buyer_token()}",
         }
-        resp = requests.post(
-            f"{BUYER_API}/buyer/auction/bidder/bid/retract",
-            data=body,
-            headers=headers,
-            timeout=self.timeout,
-        )
+        url = f"{BUYER_API}/buyer/auction/bidder/bid/retract"
+
+        def _send() -> requests.Response:
+            return request_with_retry(
+                lambda: requests.post(url, data=body, headers=dict(headers), timeout=self.timeout),
+                policy=WRITE,
+                label=f"CT Seller {describe_url('post', url)}",
+            )
+
+        resp = _send()
         if resp.status_code in (401, 403) and self._connected_buyer_token:
             self._connected_buyer_token = None
             headers["Authorization"] = f"Bearer {self.fetch_connected_buyer_token()}"
-            resp = requests.post(
-                f"{BUYER_API}/buyer/auction/bidder/bid/retract",
-                data=body,
-                headers=headers,
-                timeout=self.timeout,
-            )
+            resp = _send()
         self._raise_seller_action(resp, "Could not retract this bidder's bids on that lot.")
 
     def retract_bidder_on_items(

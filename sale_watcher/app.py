@@ -1,6 +1,7 @@
 """Live CTBids sale watcher — boss dashboard for bid activity + usernames."""
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
@@ -23,10 +24,13 @@ if str(_WATCHER_DIR) not in sys.path:
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from brand import APP_NAME as APP_TITLE, COPYRIGHT
+from brand import APP_NAME as APP_TITLE, APP_TITLE_WITH_VERSION, APP_VERSION, COPYRIGHT
 from runtime_paths import prepare_runtime
+from app_logging import log_dir, open_log_folder, setup_logging
 from ctbids_client import BidChange, LiveItem, Snapshot, buyer_sale_url, item_link, parse_sale_id
 from export_report import export_snapshot
+from friendly_errors import friendly_error
+from push_status import FAILED, PushResult, SalePushStatus, clock
 from seller_client import REVOKE_TYPES, SELLER_SITE, SUSPEND_TYPES, SellerClient, SellerSale
 from watcher import (
     BuyerMfaRequired,
@@ -49,63 +53,73 @@ from watcher import (
     send_buyer_mfa_otp,
     sign_in_estate_ez,
     verify_buyer_mfa,
+    watcher_data_dir,
 )
 
 prepare_runtime()
+log = logging.getLogger("sale_watcher.ui")
 
 THEMES = {
-    # Matches Estate Inventory SaaS: charcoal surfaces + teal accent
+    # Estate-EZ website tokens (frontend/app/globals.css). "green" is the accent key.
     "light": {
-        "green": "#2a9d9c",
-        "green_dark": "#0f1720",
-        "green_hover": "#238887",
-        "green_soft": "#e6f6f5",
-        "muted": "#6b7280",
-        "amber": "#b58105",
-        "amber_soft": "#fff6e0",
+        "green": "#d63d0d",
+        "green_dark": "#1c1917",
+        "green_hover": "#b8340b",
+        "green_soft": "#fde9e1",
+        "muted": "#57534e",
+        "amber": "#a16207",
+        "amber_soft": "#fef3c7",
         "unmet": "#c9a00a",
-        "card_bg": "#f3f6f8",
-        "row_alt": "#eef2f5",
+        "card_bg": "#fafaf9",
+        "row_alt": "#f5f5f4",
         "panel": "#ffffff",
-        "text": "#0f1720",
-        "on_accent": "#0b0e14",
+        "text": "#1c1917",
+        "on_accent": "#140500",
         "tree_bg": "#ffffff",
-        "tree_fg": "#0f1720",
-        "heading_bg": "#1a1f26",
-        "heading_fg": "#e8eef2",
-        "info_bg": "#e8eef2",
-        "window": "#e8eef2",
-        "success": "#22c55e",
-        "danger": "#ef4444",
+        "tree_fg": "#1c1917",
+        "heading_bg": "#1c1917",
+        "heading_fg": "#f5f5f4",
+        "info_bg": "#f5f5f4",
+        "window": "#f5f5f4",
+        "border": "#e7e5e4",
+        "success": "#15803d",
+        "danger": "#dc2626",
         "okayed": "#1d4ed8",
         "okayed_soft": "#dbeafe",
     },
     "dark": {
-        "green": "#3fc1c0",
-        "green_dark": "#e8eef2",
-        "green_hover": "#2ba8a7",
-        "green_soft": "#15353a",
-        "muted": "#8b95a5",
-        "amber": "#e0a84a",
-        "amber_soft": "#3a2e14",
-        "unmet": "#f5d020",
-        "card_bg": "#151a21",
-        "row_alt": "#1f252e",
-        "panel": "#1a1f26",
-        "text": "#e8eef2",
-        "on_accent": "#0b0e14",
-        "tree_bg": "#1a1f26",
-        "tree_fg": "#e8eef2",
-        "heading_bg": "#12161c",
-        "heading_fg": "#c5ced8",
-        "info_bg": "#222831",
-        "window": "#0b0e14",
-        "success": "#22c55e",
-        "danger": "#ef4444",
+        "green": "#ff4d1a",
+        "green_dark": "#f5f5f4",
+        "green_hover": "#ff7347",
+        "green_soft": "#351c17",
+        "muted": "#a8a29e",
+        "amber": "#fbbf24",
+        "amber_soft": "#302818",
+        "unmet": "#fde047",
+        "card_bg": "#0e0e10",
+        "row_alt": "#1a1a1d",
+        "panel": "#141416",
+        "text": "#f5f5f4",
+        "on_accent": "#140500",
+        "tree_bg": "#141416",
+        "tree_fg": "#f5f5f4",
+        "heading_bg": "#0e0e10",
+        "heading_fg": "#a8a29e",
+        "info_bg": "#1c1c1f",
+        "window": "#070708",
+        "border": "#27272a",
+        "success": "#4ade80",
+        "danger": "#f87171",
         "okayed": "#7dd3fc",
         "okayed_soft": "#16344a",
     },
 }
+
+FONT = "Segoe UI"
+FONT_BOLD = "Segoe UI Semibold"
+BTN_H = 30
+BTN_RADIUS = 8
+SPACE = 8  # base gap between controls; larger gaps are multiples of it
 
 # Mutable palette used by widgets (updated when theme switches)
 GREEN = THEMES["dark"]["green"]
@@ -123,11 +137,15 @@ WHITE = THEMES["dark"]["panel"]
 ON_ACCENT = THEMES["dark"]["on_accent"]
 OKAYED = THEMES["dark"]["okayed"]
 OKAYED_SOFT = THEMES["dark"]["okayed_soft"]
+BORDER = THEMES["dark"]["border"]
+SUCCESS = THEMES["dark"]["success"]
 
 
 def _apply_palette(mode: str) -> dict:
-    global GREEN, GREEN_DARK, GREEN_HOVER, GREEN_SOFT, MUTED, AMBER, AMBER_SOFT, UNMET, RED, CARD_BG, ROW_ALT, WHITE, ON_ACCENT, OKAYED, OKAYED_SOFT
+    global GREEN, GREEN_DARK, GREEN_HOVER, GREEN_SOFT, MUTED, AMBER, AMBER_SOFT, UNMET, RED, CARD_BG, ROW_ALT, WHITE, ON_ACCENT, OKAYED, OKAYED_SOFT, BORDER, SUCCESS
     t = THEMES["dark" if mode == "dark" else "light"]
+    BORDER = t["border"]
+    SUCCESS = t["success"]
     GREEN = t["green"]
     GREEN_DARK = t["green_dark"]
     GREEN_HOVER = t["green_hover"]
@@ -452,6 +470,52 @@ def apply_sizable_main_window(root, cfg: dict | None = None) -> None:
         _place()
 
 
+def install_tk_error_handler(root) -> None:
+    """Log Tk callback crashes and show a plain message instead of a raw traceback."""
+    last_shown = [0.0]
+
+    def _report(exc_type, exc, tb) -> None:
+        log.error("Unhandled error in a window callback", exc_info=(exc_type, exc, tb))
+        now = time.monotonic()
+        if now - last_shown[0] < 5.0:
+            return
+        last_shown[0] = now
+        try:
+            messagebox.showerror(APP_TITLE, friendly_error(exc))
+        except Exception:  # noqa: BLE001 - the window may be closing
+            pass
+
+    try:
+        root.report_callback_exception = _report
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def user_message(exc: BaseException, action: str, *, service: str = "the server") -> str:
+    """Log the full exception for support and return a short message for the screen."""
+    log.warning("%s failed", action, exc_info=exc)
+    return friendly_error(exc, service=service)
+
+
+POLL_INTERVAL_MESSAGE = "Refresh interval must be a number of seconds, like 45."
+
+
+def apply_ctk_defaults() -> None:
+    """Shared CustomTkinter defaults. Call before the first widget is created.
+
+    CTk's built-in font family is Roboto, which most Windows PCs don't have, so
+    widgets without an explicit font fell back to a different face than the rest.
+    """
+    ctk.set_default_color_theme("dark-blue")
+    theme = ctk.ThemeManager.theme
+    for platform_font in theme.get("CTkFont", {}).values():
+        if isinstance(platform_font, dict):
+            platform_font["family"] = FONT
+    for widget in ("CTkButton", "CTkEntry", "CTkComboBox", "CTkOptionMenu", "CTkSegmentedButton"):
+        if widget in theme:
+            theme[widget]["corner_radius"] = BTN_RADIUS
+
+
 def save_main_window_layout(root, cfg: dict) -> None:
     if not isinstance(cfg, dict):
         return
@@ -529,19 +593,63 @@ class TreeTooltip:
             self._text = ""
 
 
+class StatusChip(ctk.CTkFrame):
+    """Coloured dot + label, e.g. ``● Seller signed in``. ``level``: ok / warn / error / busy / idle."""
+
+    def __init__(self, parent, text: str = "", command=None, **kwargs) -> None:
+        super().__init__(
+            parent, corner_radius=BTN_RADIUS, fg_color=CARD_BG,
+            border_width=1, border_color=BORDER, height=BTN_H - 4, **kwargs,
+        )
+        self._level = "idle"
+        self.dot = ctk.CTkLabel(self, text="●", font=(FONT, 12), width=10, height=20, text_color=MUTED)
+        self.dot.pack(side="left", padx=(SPACE, 4), pady=2)
+        self.label = ctk.CTkLabel(
+            self, text=text, font=(FONT, 12), height=20, text_color=GREEN_DARK, anchor="w",
+        )
+        self.label.pack(side="left", padx=(0, SPACE + 2), pady=2)
+        if command:
+            for widget in (self, self.dot, self.label):
+                widget.bind("<Button-1>", lambda _e: command())
+                try:
+                    widget.configure(cursor="hand2")
+                except Exception:
+                    pass
+
+    def _dot_color(self) -> str:
+        return {
+            "ok": SUCCESS,
+            "warn": AMBER,
+            "error": RED,
+            "busy": GREEN,
+        }.get(self._level, MUTED)
+
+    def set(self, text: str, level: str = "idle") -> None:
+        self._level = level
+        self.label.configure(text=text)
+        self.dot.configure(text_color=self._dot_color())
+
+    def apply_theme(self) -> None:
+        self.configure(fg_color=CARD_BG, border_color=BORDER)
+        self.label.configure(text_color=GREEN_DARK)
+        self.dot.configure(text_color=self._dot_color())
+
+
 class MetricCard(ctk.CTkFrame):
     def __init__(self, parent, label: str, command=None, **kwargs) -> None:
-        super().__init__(parent, corner_radius=8, fg_color=CARD_BG, **kwargs)
+        super().__init__(
+            parent, corner_radius=BTN_RADIUS, fg_color=CARD_BG, border_width=1, border_color=BORDER, **kwargs,
+        )
         self._warn = False
         self._command = command
         inner = ctk.CTkFrame(self, fg_color="transparent")
-        inner.pack(fill="x", padx=8, pady=3)
+        inner.pack(fill="x", padx=10, pady=4)
         self.label = ctk.CTkLabel(
-            inner, text=label.upper(), font=("Segoe UI", 10), text_color=MUTED, anchor="w",
+            inner, text=label.upper(), font=(FONT, 10), text_color=MUTED, anchor="w",
         )
         self.label.pack(side="left")
         self.value = ctk.CTkLabel(
-            inner, text="—", font=("Segoe UI Semibold", 13), text_color=GREEN, anchor="e",
+            inner, text="—", font=(FONT_BOLD, 14), text_color=GREEN_DARK, anchor="e",
         )
         self.value.pack(side="right")
         if command:
@@ -556,12 +664,12 @@ class MetricCard(ctk.CTkFrame):
 
     def set(self, text: str, *, warn: bool = False) -> None:
         self._warn = warn
-        self.value.configure(text=text, text_color=AMBER if warn else GREEN)
+        self.value.configure(text=text, text_color=AMBER if warn else GREEN_DARK)
 
     def apply_theme(self) -> None:
-        self.configure(fg_color=CARD_BG)
+        self.configure(fg_color=CARD_BG, border_color=BORDER)
         self.label.configure(text_color=MUTED)
-        self.value.configure(text_color=AMBER if self._warn else GREEN)
+        self.value.configure(text_color=AMBER if self._warn else GREEN_DARK)
 
 
 class _WatchSession:
@@ -578,6 +686,26 @@ class _WatchSession:
         self.search = ""
         self.sort_col: str | None = None
         self.sort_asc = True
+        self.push_status = SalePushStatus(self.sale_id)
+        self.last_status = ""
+        self.syncing = False
+        self.last_sync_at: datetime | None = None
+        self.last_sync_error = ""
+        self.last_sync_error_at: datetime | None = None
+
+    def sync_summary(self) -> tuple[str, str]:
+        """(text, level) for the sync indicator."""
+        if self.syncing:
+            return "Syncing…", "busy"
+        if self.last_sync_error_at and (
+            self.last_sync_at is None or self.last_sync_error_at >= self.last_sync_at
+        ):
+            return f"Refresh failed {clock(self.last_sync_error_at)}", "error"
+        if self.last_sync_at:
+            return f"Last sync {clock(self.last_sync_at)}", "ok"
+        if self.watcher is not None:
+            return "Starting…", "busy"
+        return "Not watching", "idle"
 
     @property
     def tab_name(self) -> str:
@@ -779,12 +907,16 @@ class WatcherApp:
         )
 
         if manage_window:
-            self.root.title(APP_TITLE)
+            self.root.title(APP_TITLE_WITH_VERSION)
             apply_sizable_main_window(self.root, self.cfg)
+            install_tk_error_handler(self.root)
             try:
                 self.root.protocol("WM_DELETE_WINDOW", self._on_main_close)
             except Exception:
                 pass
+        self._push_window: ctk.CTkToplevel | None = None
+        self._push_window_body: ctk.CTkScrollableFrame | None = None
+        self._about_window: ctk.CTkToplevel | None = None
 
         self.sale_var = StringVar(value=str(self.cfg.get("sale_url") or ""))
         self.poll_var = StringVar(value=str(self.cfg.get("poll_seconds") or 45))
@@ -815,122 +947,72 @@ class WatcherApp:
         except Exception:
             pass
         outer = ctk.CTkFrame(self.host, fg_color="transparent")
-        outer.pack(fill="both", expand=True, padx=6, pady=4)
+        outer.pack(fill="both", expand=True, padx=SPACE + 2, pady=SPACE)
 
         # ----- Header (standalone only) -----
         header = ctk.CTkFrame(outer, fg_color="transparent")
         titles = ctk.CTkFrame(header, fg_color="transparent")
         self.title_label = ctk.CTkLabel(
-            titles, text=APP_TITLE, font=("Segoe UI Semibold", 22), text_color=GREEN_DARK,
+            titles, text=APP_TITLE, font=(FONT_BOLD, 22), text_color=GREEN_DARK,
         )
         self.subtitle_label = ctk.CTkLabel(
             titles,
             text="Live hammer total, top bids, and bidder usernames — pick a sale from CT Seller, or paste a URL.",
-            font=("Segoe UI", 13), text_color=MUTED,
+            font=(FONT, 13), text_color=MUTED,
         )
-        header_right = ctk.CTkFrame(header, fg_color="transparent")
         if self.manage_window:
-            header.pack(fill="x")
+            header.pack(fill="x", pady=(0, SPACE))
             titles.pack(side="left", fill="x", expand=True)
             self.title_label.pack(anchor="w")
             self.subtitle_label.pack(anchor="w")
-            header_right.pack(side="right", anchor="n")
 
-        # ----- Controls (one row so Top bids gets the height) -----
-        self.controls = ctk.CTkFrame(outer, corner_radius=12, fg_color=WHITE)
-        self.controls.pack(fill="x", pady=(2, 0))
+        # ----- Controls: sale + watch actions, then accounts -----
+        self.controls = ctk.CTkFrame(
+            outer, corner_radius=12, fg_color=WHITE, border_width=1, border_color=BORDER,
+        )
+        self.controls.pack(fill="x")
 
         row1 = ctk.CTkFrame(self.controls, fg_color="transparent")
-        row1.pack(fill="x", padx=8, pady=4)
-        btns = ctk.CTkFrame(row1, fg_color="transparent")
-        btns.pack(side="right")
-        self.estate_ez_btn = ctk.CTkButton(
-            btns, text="Estate-Ez sign in", width=128, height=28,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT, command=self._on_estate_ez_login,
-        )
-        self.estate_ez_btn.pack(side="left")
-        self.signin_btn = ctk.CTkButton(
-            btns, text="Buyer sign in", width=108, height=28,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT, command=self._on_login,
-        )
-        self.signin_btn.pack(side="left", padx=(6, 0))
-        self.seller_btn = ctk.CTkButton(
-            btns, text="Seller sign in", width=108, height=28,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT, command=self._on_seller_login,
-        )
-        self.seller_btn.pack(side="left", padx=(6, 0))
-        self.start_btn = ctk.CTkButton(
-            btns, text="Start", width=72, height=28,
-            fg_color=GREEN, hover_color=GREEN_HOVER, text_color=ON_ACCENT,
-            font=("Segoe UI Semibold", 13),
-            command=self._on_start,
-        )
-        self.start_btn.pack(side="left", padx=(6, 0))
-        self.watch_all_btn = ctk.CTkButton(
-            btns, text="Watch all", width=88, height=28,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT, command=self._on_watch_all,
-        )
-        self.stop_btn = ctk.CTkButton(
-            btns, text="Stop", width=64, height=28,
-            fg_color="transparent", text_color=MUTED, border_color=MUTED, border_width=1,
-            command=self._on_stop, state="disabled",
-        )
-        self.stop_btn.pack(side="left", padx=(6, 0))
-        self.export_btn = ctk.CTkButton(
-            btns, text="Export PDF", width=96, height=28,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT, command=self._on_export_pdf,
-        )
-        self.export_btn.pack(side="right", padx=(6, 0))
-        self.opensale_btn = ctk.CTkButton(
-            btns, text="Open sale", width=88, height=28,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT, command=self._open_sale,
-        )
-        self.opensale_btn.pack(side="right")
-        badge_host = header_right if self.manage_window else btns
-        self.theme_btn = ctk.CTkButton(
-            badge_host,
-            text="Dark" if self.theme_mode == "light" else "Light",
-            width=70, height=28,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT, command=self._toggle_theme,
-        )
-        self.login_badge = ctk.CTkLabel(
-            badge_host, textvariable=self.login_var, font=("Segoe UI Semibold", 12),
-            text_color=GREEN, fg_color=GREEN_SOFT, corner_radius=8, padx=10, pady=4,
-        )
-        if self.manage_window:
-            self.theme_btn.pack(side="left", padx=(0, 8))
-            self.login_badge.pack(side="left")
-        else:
-            self.login_badge.pack(side="right", padx=(8, 0))
-            self.theme_btn.pack(side="right", padx=(6, 0))
+        row1.pack(fill="x", padx=SPACE + 4, pady=(SPACE + 2, SPACE // 2))
+        self._toolbar_row1 = row1
+        # Parent is self.controls so _reflow_toolbar can pack it inside row1 or on its own row.
+        btns = ctk.CTkFrame(self.controls, fg_color="transparent")
+        self._toolbar_actions = btns
+        self.start_btn = self._make_button(btns, "Start", self._on_start, width=80, primary=True)
+        self.start_btn.pack(side="left")
+        self.watch_all_btn = self._make_button(btns, "Watch all", self._on_watch_all, width=92)
+        self.stop_btn = self._make_button(btns, "Stop", self._on_stop, width=68, muted=True)
+        self.stop_btn.configure(state="disabled")
+        self.stop_btn.pack(side="left", padx=(SPACE, 0))
+        self.opensale_btn = self._make_button(btns, "Open sale", self._open_sale, width=92)
+        self.opensale_btn.pack(side="left", padx=(SPACE * 2, 0))
+        self.export_btn = self._make_button(btns, "Export PDF", self._on_export_pdf, width=100)
+        self.export_btn.pack(side="left", padx=(SPACE, 0))
 
-        self.sale_label = ctk.CTkLabel(row1, text="Sale", width=40, anchor="w", font=("Segoe UI Semibold", 13), text_color=GREEN_DARK)
+        self.sale_label = ctk.CTkLabel(
+            row1, text="Sale", width=36, anchor="w", font=(FONT_BOLD, 13), text_color=GREEN_DARK,
+        )
         self.sale_label.pack(side="left")
         self.sale_combo = ctk.CTkComboBox(
             row1,
-            height=28,
+            height=BTN_H,
+            corner_radius=BTN_RADIUS,
             command=self._on_sale_combo,
-            font=("Segoe UI", 13),
-            dropdown_font=("Segoe UI", 12),
+            font=(FONT, 13),
+            dropdown_font=(FONT, 12),
         )
-        self.sale_combo.pack(side="left", fill="x", expand=True, padx=(6, 4))
-        self.refresh_sales_btn = ctk.CTkButton(
-            row1, text="Sales", width=56, height=28,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT, command=self._on_refresh_sales,
-        )
-        self.refresh_sales_btn.pack(side="left", padx=(0, 6))
-        self.every_label = ctk.CTkLabel(row1, text="every", text_color=MUTED)
+        self.sale_combo.set(self.sale_var.get())
+        self.sale_combo.pack(side="left", fill="x", expand=True, padx=(SPACE // 2, SPACE))
+        self.refresh_sales_btn = self._make_button(row1, "Sales", self._on_refresh_sales, width=60)
+        self.refresh_sales_btn.pack(side="left", padx=(0, SPACE * 2))
+        self.every_label = ctk.CTkLabel(row1, text="Refresh every", font=(FONT, 12), text_color=MUTED)
         self.every_label.pack(side="left")
-        ctk.CTkEntry(row1, textvariable=self.poll_var, width=44, height=28).pack(side="left", padx=(4, 2))
-        self.sec_label = ctk.CTkLabel(row1, text="sec", text_color=MUTED)
+        self.poll_entry = ctk.CTkEntry(
+            row1, textvariable=self.poll_var, width=46, height=BTN_H, corner_radius=BTN_RADIUS,
+            font=(FONT, 12), justify="center",
+        )
+        self.poll_entry.pack(side="left", padx=(SPACE // 2, SPACE // 2))
+        self.sec_label = ctk.CTkLabel(row1, text="sec", font=(FONT, 12), text_color=MUTED)
         self.sec_label.pack(side="left")
         self.auto_save_chk = ctk.CTkCheckBox(
             row1,
@@ -941,9 +1023,44 @@ class WatcherApp:
             fg_color=GREEN,
             hover_color=GREEN_HOVER,
             text_color=GREEN_DARK,
-            font=("Segoe UI", 12),
+            font=(FONT, 12),
+            checkbox_width=20,
+            checkbox_height=20,
         )
-        self.auto_save_chk.pack(side="left", padx=(10, 8))
+        self.auto_save_chk.pack(side="left", padx=(SPACE * 2, 0))
+
+        row2 = ctk.CTkFrame(self.controls, fg_color="transparent")
+        row2.pack(fill="x", padx=SPACE + 4, pady=(SPACE // 2, SPACE + 2))
+        self._toolbar_row2 = row2
+        self.accounts_label = ctk.CTkLabel(
+            row2, text="Accounts", width=36, anchor="w", font=(FONT_BOLD, 13), text_color=GREEN_DARK,
+        )
+        self.accounts_label.pack(side="left", padx=(0, SPACE))
+        self.ee_chip = StatusChip(row2, "Estate-Ez: checking…")
+        self.ee_chip.pack(side="left", padx=(0, SPACE // 2))
+        self.buyer_chip = StatusChip(row2, "Buyer: checking…")
+        self.buyer_chip.pack(side="left", padx=(0, SPACE // 2))
+        self.seller_chip = StatusChip(row2, "Seller: checking…")
+        self.seller_chip.pack(side="left")
+        auth_btns = ctk.CTkFrame(self.controls, fg_color="transparent")
+        self._toolbar_auth = auth_btns
+        self.estate_ez_btn = self._make_button(auth_btns, "Estate-Ez sign in", self._on_estate_ez_login, width=132)
+        self.estate_ez_btn.pack(side="left")
+        self.signin_btn = self._make_button(auth_btns, "Buyer sign in", self._on_login, width=112)
+        self.signin_btn.pack(side="left", padx=(SPACE, 0))
+        self.seller_btn = self._make_button(auth_btns, "Seller sign in", self._on_seller_login, width=112)
+        self.seller_btn.pack(side="left", padx=(SPACE, 0))
+        self.theme_btn = self._make_button(
+            auth_btns,
+            "Dark theme" if self.theme_mode == "light" else "Light theme",
+            self._toggle_theme,
+            width=104,
+            muted=True,
+        )
+        self.theme_btn.pack(side="left", padx=(SPACE * 2, 0))
+        self._toolbar_wrapped: tuple[bool, bool] | None = None
+        self._reflow_toolbar()
+        self.controls.bind("<Configure>", self._reflow_toolbar, add="+")
 
         self.sale_tabs_wrap = ctk.CTkFrame(outer, fg_color="transparent")
         self.sale_tabs_hint = ctk.CTkLabel(
@@ -967,7 +1084,7 @@ class WatcherApp:
         # ----- Metrics -----
         metrics = ctk.CTkFrame(outer, fg_color="transparent")
         self.metrics_row = metrics
-        metrics.pack(fill="x", pady=(2, 0))
+        metrics.pack(fill="x", pady=(SPACE, 0))
         metrics.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1, uniform="m")
         self.metric_hammer = MetricCard(metrics, "Hammer total")
         self.metric_bidding = MetricCard(metrics, "Bidding")
@@ -981,11 +1098,11 @@ class WatcherApp:
         )
         last = len(metric_cards) - 1
         for i, card in enumerate(metric_cards):
-            card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else 6, 0 if i == last else 6))
+            card.grid(row=0, column=i, sticky="nsew", padx=(0 if i == 0 else SPACE // 2, 0 if i == last else SPACE // 2))
 
         # ----- Body: resizable bids | activity -----
         body = ctk.CTkFrame(outer, fg_color="transparent")
-        body.pack(fill="both", expand=True, pady=(2, 0))
+        body.pack(fill="both", expand=True, pady=(SPACE, 0))
 
         win_bg = THEMES[self.theme_mode]["window"]
         self.paned = tk.PanedWindow(
@@ -1004,14 +1121,18 @@ class WatcherApp:
         self.bids_host = tk.Frame(self.paned, bg=win_bg, highlightthickness=0)
         self.act_host = tk.Frame(self.paned, bg=win_bg, highlightthickness=0)
 
-        bids_panel = ctk.CTkFrame(self.bids_host, corner_radius=12, fg_color=WHITE)
+        bids_panel = ctk.CTkFrame(
+            self.bids_host, corner_radius=12, fg_color=WHITE, border_width=1, border_color=BORDER,
+        )
         bids_panel.pack(fill="both", expand=True)
         self.bids_panel = bids_panel
 
         bids_head = ctk.CTkFrame(bids_panel, fg_color="transparent")
-        bids_head.pack(fill="x", padx=8, pady=(4, 2))
+        bids_head.pack(fill="x", padx=SPACE + 4, pady=(SPACE + 2, SPACE // 2))
+        bids_actions = ctk.CTkFrame(bids_panel, fg_color="transparent")
+        bids_actions.pack(fill="x", padx=SPACE + 4, pady=(0, SPACE))
         self.bids_title = ctk.CTkLabel(
-            bids_head, text="Top bids", font=("Segoe UI Semibold", 15), text_color=GREEN_DARK,
+            bids_head, text="Top bids", font=(FONT_BOLD, 15), text_color=GREEN_DARK,
         )
         self.bids_title.pack(side="left")
         self.bids_view_menu = ctk.CTkSegmentedButton(
@@ -1023,10 +1144,12 @@ class WatcherApp:
             unselected_color=GREEN_SOFT,
             unselected_hover_color=ROW_ALT,
             text_color=GREEN_DARK if self.theme_mode == "dark" else ON_ACCENT,
-            height=28,
+            height=BTN_H,
+            corner_radius=BTN_RADIUS,
+            font=(FONT, 12),
         )
         self.bids_view_menu.set("Lots")
-        self.bids_view_menu.pack(side="left", padx=(10, 0))
+        self.bids_view_menu.pack(side="left", padx=(SPACE * 2, 0))
         self.filter_menu = ctk.CTkSegmentedButton(
             bids_head,
             values=["Bidding", "Under", "Open", "Sold", "All"],
@@ -1036,60 +1159,46 @@ class WatcherApp:
             unselected_color=GREEN_SOFT,
             unselected_hover_color=ROW_ALT,
             text_color=GREEN_DARK if self.theme_mode == "dark" else ON_ACCENT,
-            height=28,
+            height=BTN_H,
+            corner_radius=BTN_RADIUS,
+            font=(FONT, 12),
         )
         self.filter_menu.set("Bidding")
-        self.filter_menu.pack(side="left", padx=(10, 0))
+        self.filter_menu.pack(side="left", padx=(SPACE, 0))
         self.acct_legend = ctk.CTkLabel(
             bids_head,
             text="Yellow reserve = not met  ·  amber row = bidding under  ·  click username for CT Seller",
-            font=("Segoe UI", 11),
+            font=(FONT, 11),
             text_color=MUTED,
             anchor="w",
         )
-        self.act_toggle_btn = ctk.CTkButton(
-            bids_head,
-            text="Hide activity" if self._activity_open else "Activity",
-            width=100, height=28,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT, command=self._toggle_activity,
+        self.act_toggle_btn = self._make_button(
+            bids_head, "Hide activity" if self._activity_open else "Activity", self._toggle_activity, width=104,
         )
         self.act_toggle_btn.pack(side="right")
-        ctk.CTkEntry(
-            bids_head, textvariable=self.search_var, width=160, height=28,
-            placeholder_text="Search SKU, item, or bidder…",
-        ).pack(side="right", padx=(0, 6))
-        self.view_btn = ctk.CTkButton(
-            bids_head, text="View item", width=84, height=28,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT, command=self._open_selected_bid,
+        self.search_entry = ctk.CTkEntry(
+            bids_head, textvariable=self.search_var, width=220, height=BTN_H, corner_radius=BTN_RADIUS,
+            font=(FONT, 12), placeholder_text="Search SKU, item, or bidder…",
         )
-        self.view_btn.pack(side="right", padx=(0, 6))
-        self.retract_btn = ctk.CTkButton(
-            bids_head, text="Retract bids", width=104, height=28,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT, command=self._on_retract_selected,
+        self.search_entry.pack(side="right", padx=(0, SPACE))
+        self._style_inputs()
+
+        self.suspend_btn = self._make_button(bids_actions, "Suspend", self._on_suspend_selected, width=88)
+        self.suspend_btn.pack(side="left")
+        self.okay_btn = self._make_button(bids_actions, "Okay", self._on_okay_selected, width=72)
+        self.okay_btn.pack(side="left", padx=(SPACE, 0))
+        self.retract_btn = self._make_button(bids_actions, "Retract bids", self._on_retract_selected, width=108)
+        self.retract_btn.pack(side="left", padx=(SPACE, 0))
+        self.view_btn = self._make_button(bids_actions, "View item", self._open_selected_bid, width=92)
+        self.view_btn.pack(side="left", padx=(SPACE, 0))
+        self.updated_label = ctk.CTkLabel(
+            bids_actions, textvariable=self.updated_var, font=(FONT, 11), text_color=MUTED, anchor="e",
         )
-        self.retract_btn.pack(side="right", padx=(0, 6))
-        self.okay_btn = ctk.CTkButton(
-            bids_head, text="Okay", width=72, height=28,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT, command=self._on_okay_selected,
-        )
-        self.okay_btn.pack(side="right", padx=(0, 6))
-        self.suspend_btn = ctk.CTkButton(
-            bids_head, text="Suspend", width=84, height=28,
-            fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
-            hover_color=GREEN_SOFT, command=self._on_suspend_selected,
-        )
-        self.suspend_btn.pack(side="right", padx=(0, 6))
-        ctk.CTkLabel(
-            bids_head, textvariable=self.updated_var, font=("Segoe UI", 11), text_color=MUTED,
-        ).pack(side="right", padx=(0, 8))
+        self.updated_label.pack(side="right")
 
         # Native tree table — much smoother than rebuilding CTk rows every poll
         table_host = tk.Frame(bids_panel, bg=THEMES[self.theme_mode]["panel"], highlightthickness=0)
-        table_host.pack(fill="both", expand=True, padx=8, pady=(0, 6))
+        table_host.pack(fill="both", expand=True, padx=SPACE + 4, pady=(0, SPACE + 2))
         self.table_host = table_host
         self.table_wrap = table_host
 
@@ -1175,19 +1284,17 @@ class WatcherApp:
         self._bids_placeholder = None
 
         # Activity panel
-        self.act_panel = ctk.CTkFrame(self.act_host, corner_radius=12, fg_color=WHITE)
+        self.act_panel = ctk.CTkFrame(
+            self.act_host, corner_radius=12, fg_color=WHITE, border_width=1, border_color=BORDER,
+        )
         self.act_panel.pack(fill="both", expand=True)
         act_head = ctk.CTkFrame(self.act_panel, fg_color="transparent")
-        act_head.pack(fill="x", padx=12, pady=(10, 6))
+        act_head.pack(fill="x", padx=SPACE + 4, pady=(SPACE + 2, SPACE))
         self.act_title = ctk.CTkLabel(
-            act_head, text="Activity", font=("Segoe UI Semibold", 16), text_color=GREEN_DARK,
+            act_head, text="Activity", font=(FONT_BOLD, 15), text_color=GREEN_DARK,
         )
         self.act_title.pack(side="left")
-        self.clear_act_btn = ctk.CTkButton(
-            act_head, text="Clear", width=60, height=28,
-            fg_color="transparent", text_color=MUTED, border_width=0,
-            hover_color=GREEN_SOFT, command=self._clear_activity,
-        )
+        self.clear_act_btn = self._make_button(act_head, "Clear", self._clear_activity, width=64, muted=True)
         self.clear_act_btn.pack(side="right")
 
         self.activity_list = ctk.CTkScrollableFrame(self.act_panel, fg_color=CARD_BG, corner_radius=8)
@@ -1206,17 +1313,37 @@ class WatcherApp:
         self._sash_tries = 0
         self.root.after(120, self._restore_sash)
 
-        # Status bar
+        # Status bar: last message for the sale on screen | sync · push · logs · about · version
         status = ctk.CTkFrame(outer, fg_color="transparent")
-        status.pack(fill="x", pady=(4, 0))
-        self.copyright_label = ctk.CTkLabel(
-            status, text=COPYRIGHT, font=("Segoe UI", 11), text_color=MUTED, anchor="e",
+        # Packed ahead of the expanding body so a short window never pushes it out of view.
+        status.pack(fill="x", side="bottom", pady=(SPACE, 0), before=self.controls)
+        status_right = ctk.CTkFrame(status, fg_color="transparent")
+        status_right.pack(side="right")
+        self.sync_chip = StatusChip(status_right, "Not watching")
+        self.sync_chip.pack(side="left", padx=(SPACE, 0))
+        self.push_chip = StatusChip(status_right, "Estate-Ez push: not yet", command=self._show_push_status)
+        self.push_chip.pack(side="left", padx=(SPACE // 2, 0))
+        self.logs_btn = ctk.CTkButton(
+            status_right, text="Logs", width=48, height=24, corner_radius=BTN_RADIUS,
+            font=(FONT, 11), fg_color="transparent", text_color=MUTED, hover_color=ROW_ALT,
+            command=self._open_logs,
         )
-        self.copyright_label.pack(side="right")
+        self.logs_btn.pack(side="left", padx=(SPACE, 0))
+        self.about_btn = ctk.CTkButton(
+            status_right, text="About", width=52, height=24, corner_radius=BTN_RADIUS,
+            font=(FONT, 11), fg_color="transparent", text_color=MUTED, hover_color=ROW_ALT,
+            command=self._show_about,
+        )
+        self.about_btn.pack(side="left")
+        self.copyright_label = ctk.CTkLabel(
+            status_right, text=f"v{APP_VERSION}", font=(FONT, 11), text_color=MUTED, anchor="e",
+        )
+        self.copyright_label.pack(side="left", padx=(SPACE // 2, 0))
         self.status_label = ctk.CTkLabel(
-            status, textvariable=self.status_var, font=("Segoe UI", 12), text_color=MUTED, anchor="w",
+            status, textvariable=self.status_var, font=(FONT, 12), text_color=MUTED, anchor="w",
         )
         self.status_label.pack(side="left", fill="x", expand=True)
+        self._refresh_session_chips()
 
         self._show_bids_placeholder("Start watching to load live bids.")
         self._style_tree()
@@ -1228,6 +1355,137 @@ class WatcherApp:
             self.root.destroy()
         except Exception:
             pass
+
+    def _open_logs(self) -> None:
+        try:
+            open_log_folder()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not open log folder", exc_info=True)
+            messagebox.showerror(
+                APP_TITLE,
+                f"Could not open the log folder.\n\n{log_dir()}\n\n{friendly_error(exc)}",
+            )
+
+    def _dialog(self, title: str, *, width: int, height: int) -> ctk.CTkToplevel:
+        win = ctk.CTkToplevel(self.root)
+        win.title(f"{title} — {APP_TITLE}")
+        win.configure(fg_color=THEMES[self.theme_mode]["window"])
+        win.geometry(f"{width}x{height}")
+        win.minsize(min(width, 420), min(height, 260))
+        try:
+            win.transient(self.root.winfo_toplevel())
+        except Exception:
+            pass
+        win.after(50, win.lift)
+        return win
+
+    def _show_about(self) -> None:
+        if self._about_window is not None and self._about_window.winfo_exists():
+            self._about_window.lift()
+            return
+        win = self._dialog("About", width=560, height=320)
+        self._about_window = win
+        body = ctk.CTkFrame(
+            win, corner_radius=12, fg_color=WHITE, border_width=1, border_color=BORDER,
+        )
+        body.pack(fill="both", expand=True, padx=SPACE * 2, pady=SPACE * 2)
+        ctk.CTkLabel(body, text=APP_TITLE, font=(FONT_BOLD, 20), text_color=GREEN_DARK).pack(
+            anchor="w", padx=SPACE * 2, pady=(SPACE * 2, 0),
+        )
+        ctk.CTkLabel(body, text=f"Version {APP_VERSION}", font=(FONT, 13), text_color=GREEN).pack(
+            anchor="w", padx=SPACE * 2,
+        )
+        rows = (
+            ("Log folder", str(log_dir())),
+            ("Data folder", str(watcher_data_dir())),
+        )
+        grid = ctk.CTkFrame(body, fg_color="transparent")
+        grid.pack(fill="x", padx=SPACE * 2, pady=(SPACE * 2, 0))
+        grid.grid_columnconfigure(1, weight=1)
+        for r, (label, value) in enumerate(rows):
+            ctk.CTkLabel(grid, text=label, font=(FONT, 12), text_color=MUTED, anchor="w").grid(
+                row=r, column=0, sticky="w", padx=(0, SPACE * 2),
+            )
+            ctk.CTkLabel(
+                grid, text=value, font=(FONT, 12), text_color=GREEN_DARK, anchor="w",
+                justify="left", wraplength=380,
+            ).grid(row=r, column=1, sticky="w")
+        ctk.CTkLabel(body, text=COPYRIGHT, font=(FONT, 11), text_color=MUTED).pack(
+            anchor="w", padx=SPACE * 2, pady=(SPACE * 2, 0),
+        )
+        foot = ctk.CTkFrame(body, fg_color="transparent")
+        foot.pack(fill="x", side="bottom", padx=SPACE * 2, pady=SPACE * 2)
+        self._make_button(foot, "Close", win.destroy, width=80, primary=True).pack(side="right")
+        self._make_button(foot, "Open log folder", self._open_logs, width=132).pack(
+            side="right", padx=(0, SPACE),
+        )
+
+    def _show_push_status(self) -> None:
+        if self._push_window is not None and self._push_window.winfo_exists():
+            self._push_window.lift()
+            self._refresh_push_window()
+            return
+        win = self._dialog("Estate-Ez push status", width=640, height=460)
+        self._push_window = win
+        ctk.CTkLabel(
+            win, text="Estate-Ez push status", font=(FONT_BOLD, 18), text_color=GREEN_DARK,
+        ).pack(anchor="w", padx=SPACE * 2, pady=(SPACE * 2, 0))
+        ctk.CTkLabel(
+            win,
+            text="Each watched sale keeps its own last push time, result, and error.",
+            font=(FONT, 12), text_color=MUTED,
+        ).pack(anchor="w", padx=SPACE * 2)
+        self._push_window_body = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        self._push_window_body.pack(fill="both", expand=True, padx=SPACE, pady=SPACE)
+        foot = ctk.CTkFrame(win, fg_color="transparent")
+        foot.pack(fill="x", padx=SPACE * 2, pady=(0, SPACE * 2))
+        self._make_button(foot, "Close", win.destroy, width=80, primary=True).pack(side="right")
+        self._refresh_push_window()
+
+    def _refresh_push_window(self) -> None:
+        body = self._push_window_body
+        if self._push_window is None or body is None:
+            return
+        try:
+            if not self._push_window.winfo_exists():
+                return
+        except Exception:
+            return
+        for child in body.winfo_children():
+            child.destroy()
+        sessions = [s for s in self._sessions.values() if s.push_status.attempts or s.watcher]
+        if not sessions:
+            ctk.CTkLabel(
+                body,
+                text="No sales watched yet. Start a sale and its Estate-Ez push status will show here.",
+                font=(FONT, 12), text_color=MUTED, wraplength=560, justify="left",
+            ).pack(anchor="w", padx=SPACE, pady=SPACE)
+            return
+        for sess in sessions:
+            card = ctk.CTkFrame(
+                body, corner_radius=10, fg_color=WHITE, border_width=1, border_color=BORDER,
+            )
+            card.pack(fill="x", padx=SPACE // 2, pady=(0, SPACE))
+            head = ctk.CTkFrame(card, fg_color="transparent")
+            head.pack(fill="x", padx=SPACE + 4, pady=(SPACE + 2, SPACE // 2))
+            ctk.CTkLabel(
+                head, text=f"{sess.title}  ·  {sess.sale_id}", font=(FONT_BOLD, 14), text_color=GREEN_DARK,
+            ).pack(side="left")
+            chip = StatusChip(head)
+            chip.set(sess.push_status.summary().replace("Estate-Ez push", "Push"), sess.push_status.level)
+            chip.pack(side="right")
+            grid = ctk.CTkFrame(card, fg_color="transparent")
+            grid.pack(fill="x", padx=SPACE + 4, pady=(0, SPACE + 2))
+            grid.grid_columnconfigure(1, weight=1)
+            for r, (label, value) in enumerate(sess.push_status.details()):
+                is_error = label == "Last error" and sess.push_status.has_current_error
+                ctk.CTkLabel(
+                    grid, text=label, font=(FONT, 12), text_color=MUTED, anchor="w", height=22,
+                ).grid(row=r, column=0, sticky="nw", padx=(0, SPACE * 2))
+                ctk.CTkLabel(
+                    grid, text=value, font=(FONT, 12), text_color=RED if is_error else GREEN_DARK,
+                    anchor="w", justify="left", wraplength=420, height=22,
+                ).grid(row=r, column=1, sticky="w")
 
     def mount_risk_panel(self, host) -> None:
         """Dedicated At risk tab: unique suspended / unpaid bidders across watched sales."""
@@ -1252,25 +1510,25 @@ class WatcherApp:
             text_color=MUTED,
         ).pack(side="left", padx=(12, 0), pady=(4, 0))
         self.risk_open_btn = ctk.CTkButton(
-            head, text="Open in Seller", width=120, height=28,
+            head, text="Open in Seller", width=120, height=BTN_H,
             fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
             hover_color=GREEN_SOFT, command=self._on_risk_open_seller,
         )
         self.risk_open_btn.pack(side="right")
         self.risk_retract_btn = ctk.CTkButton(
-            head, text="Retract bids", width=104, height=28,
+            head, text="Retract bids", width=104, height=BTN_H,
             fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
             hover_color=GREEN_SOFT, command=self._on_risk_retract,
         )
         self.risk_retract_btn.pack(side="right", padx=(0, 6))
         self.risk_okay_btn = ctk.CTkButton(
-            head, text="Okay", width=72, height=28,
+            head, text="Okay", width=72, height=BTN_H,
             fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
             hover_color=GREEN_SOFT, command=self._on_risk_okay,
         )
         self.risk_okay_btn.pack(side="right", padx=(0, 6))
         self.risk_suspend_btn = ctk.CTkButton(
-            head, text="Suspend", width=84, height=28,
+            head, text="Suspend", width=84, height=BTN_H,
             fg_color="transparent", text_color=GREEN, border_color=GREEN, border_width=1,
             hover_color=GREEN_SOFT, command=self._on_risk_suspend,
         )
@@ -1942,6 +2200,9 @@ class WatcherApp:
                 if sess.title else "Start watching to load live bids."
             )
         self._rebuild_activity(sess)
+        if sess.last_status:
+            self.status_var.set(sess.last_status)
+        self._refresh_session_chips()
 
     def _rebuild_activity(self, sess: _WatchSession | None) -> None:
         self._clear_rows(self.activity_list)
@@ -1978,10 +2239,14 @@ class WatcherApp:
         sessions = self._tab_sessions()
         names = [sess.tab_name for sess in sessions]
         live_n = len(self._live_seller_sales())
-        if live_n > 1 and not self.watch_all_btn.winfo_ismapped():
-            self.watch_all_btn.pack(side="left", padx=(8, 0), after=self.start_btn)
-        elif live_n <= 1 and self.watch_all_btn.winfo_ismapped():
+        if live_n > 1 and not self.watch_all_btn.winfo_manager():
+            self.watch_all_btn.pack(side="left", padx=(SPACE, 0), after=self.start_btn)
+            self._toolbar_wrapped = None
+            self.root.after_idle(self._reflow_toolbar)
+        elif live_n <= 1 and self.watch_all_btn.winfo_manager():
             self.watch_all_btn.pack_forget()
+            self._toolbar_wrapped = None
+            self.root.after_idle(self._reflow_toolbar)
         if not names:
             if self._tabs_visible:
                 self.sale_tabs_wrap.pack_forget()
@@ -2052,7 +2317,7 @@ class WatcherApp:
             except Exception as exc:
                 sales = []
                 locations = []
-                err = str(exc) or type(exc).__name__
+                err = "Could not load sales. " + user_message(exc, "Loading CT Seller sales", service="CT Seller")
             self.root.after(0, self._apply_seller_sales, sales, locations, err, announce)
 
         threading.Thread(target=work, daemon=True).start()
@@ -2316,9 +2581,93 @@ class WatcherApp:
             risk.tag_configure("okayed", background=OKAYED_SOFT, foreground=OKAYED)
         self._schedule_unmet_paint()
 
+    def _reflow_toolbar(self, _event=None) -> None:
+        """Keep each toolbar group on one line when it fits; otherwise give it its own line.
+
+        Widths come from Tk's requested sizes, so this follows Windows display scaling.
+        """
+        width = self.controls.winfo_width()
+        if width <= 1:
+            width = self.controls.winfo_reqwidth()
+        gap = int(SPACE * 6 * ctk.ScalingTracker.get_widget_scaling(self.controls))
+
+        def need(widgets) -> int:
+            return sum(w.winfo_reqwidth() for w in widgets) + gap
+
+        row1_left = (
+            self.sale_label, self.refresh_sales_btn, self.every_label, self.poll_entry,
+            self.sec_label, self.auto_save_chk,
+        )
+        min_combo = int(160 * ctk.ScalingTracker.get_widget_scaling(self.controls))
+        wrap1 = need(row1_left) + min_combo + self._toolbar_actions.winfo_reqwidth() > width
+        row2_left = (self.accounts_label, self.ee_chip, self.buyer_chip, self.seller_chip)
+        wrap2 = need(row2_left) + self._toolbar_auth.winfo_reqwidth() > width
+        if (wrap1, wrap2) == self._toolbar_wrapped:
+            return
+        self._toolbar_wrapped = (wrap1, wrap2)
+        pad = SPACE + 4
+        self._toolbar_actions.pack_forget()
+        if wrap1:
+            self._toolbar_actions.pack(
+                fill="x", padx=pad, pady=(0, SPACE // 2), after=self._toolbar_row1,
+            )
+        else:
+            self._toolbar_actions.pack(in_=self._toolbar_row1, side="right", padx=(SPACE, 0))
+        self._toolbar_auth.pack_forget()
+        if wrap2:
+            self._toolbar_auth.pack(fill="x", padx=pad, pady=(0, SPACE + 2), after=self._toolbar_row2)
+            self._toolbar_row2.pack_configure(pady=(SPACE // 2, SPACE // 2))
+        else:
+            self._toolbar_auth.pack(in_=self._toolbar_row2, side="right")
+            self._toolbar_row2.pack_configure(pady=(SPACE // 2, SPACE + 2))
+
+    def _style_inputs(self) -> None:
+        for entry in (self.poll_entry, self.search_entry):
+            entry.configure(fg_color=CARD_BG, text_color=GREEN_DARK, border_color=BORDER)
+        self.sale_combo.configure(
+            fg_color=CARD_BG,
+            text_color=GREEN_DARK,
+            border_color=BORDER,
+            button_color=BORDER,
+            button_hover_color=GREEN,
+            dropdown_fg_color=WHITE,
+            dropdown_text_color=GREEN_DARK,
+            dropdown_hover_color=GREEN_SOFT,
+        )
+
+    def _make_button(
+        self,
+        parent,
+        text: str,
+        command,
+        *,
+        width: int = 96,
+        primary: bool = False,
+        muted: bool = False,
+    ) -> ctk.CTkButton:
+        """Toolbar button: one height, radius and font everywhere; primary = filled accent."""
+        btn = ctk.CTkButton(
+            parent,
+            text=text,
+            command=command,
+            width=width,
+            height=BTN_H,
+            corner_radius=BTN_RADIUS,
+            border_width=0 if primary else 1,
+            font=(FONT_BOLD, 13) if primary else (FONT, 12),
+        )
+        if primary:
+            btn.configure(fg_color=GREEN, hover_color=GREEN_HOVER, text_color=ON_ACCENT)
+        else:
+            self._outline_btn(btn, muted=muted)
+        return btn
+
     def _outline_btn(self, btn: ctk.CTkButton, *, muted: bool = False) -> None:
         if muted:
-            btn.configure(fg_color="transparent", text_color=MUTED, border_color=MUTED, hover_color=GREEN_SOFT)
+            btn.configure(
+                fg_color="transparent", text_color=MUTED, border_color=BORDER, hover_color=ROW_ALT,
+                text_color_disabled=BORDER,
+            )
         else:
             btn.configure(fg_color="transparent", text_color=GREEN, border_color=GREEN, hover_color=GREEN_SOFT)
 
@@ -2336,13 +2685,19 @@ class WatcherApp:
 
         self.title_label.configure(text_color=GREEN_DARK)
         self.subtitle_label.configure(text_color=MUTED)
-        self.theme_btn.configure(
-            text="Dark" if self.theme_mode == "light" else "Light",
-            text_color=GREEN, border_color=GREEN, hover_color=GREEN_SOFT,
-        )
+        self.theme_btn.configure(text="Dark theme" if self.theme_mode == "light" else "Light theme")
+        self._outline_btn(self.theme_btn, muted=True)
+        self._outline_btn(self.estate_ez_btn)
+        for chip in (self.ee_chip, self.buyer_chip, self.seller_chip, self.sync_chip, self.push_chip):
+            chip.apply_theme()
         self._refresh_login_badge()
+        self._refresh_session_chips()
+        for btn in (self.logs_btn, self.about_btn):
+            btn.configure(text_color=MUTED, hover_color=ROW_ALT)
 
-        self.controls.configure(fg_color=WHITE)
+        self.controls.configure(fg_color=WHITE, border_color=BORDER)
+        self.accounts_label.configure(text_color=GREEN_DARK)
+        self.updated_label.configure(text_color=MUTED)
         self.sale_label.configure(text_color=GREEN_DARK)
         self.every_label.configure(text_color=MUTED)
         self.sec_label.configure(text_color=MUTED)
@@ -2358,12 +2713,7 @@ class WatcherApp:
         self._outline_btn(self.export_btn)
         self._outline_btn(self.opensale_btn)
         try:
-            self.sale_combo.configure(
-                button_color=GREEN,
-                button_hover_color=GREEN_HOVER,
-                border_color=GREEN,
-                dropdown_hover_color=GREEN_SOFT,
-            )
+            self._style_inputs()
         except Exception:
             pass
         try:
@@ -2384,8 +2734,8 @@ class WatcherApp:
         ):
             card.apply_theme()
 
-        self.bids_panel.configure(fg_color=WHITE)
-        self.act_panel.configure(fg_color=WHITE)
+        self.bids_panel.configure(fg_color=WHITE, border_color=BORDER)
+        self.act_panel.configure(fg_color=WHITE, border_color=BORDER)
         try:
             self.table_host.configure(bg=WHITE)
         except Exception:
@@ -2407,7 +2757,7 @@ class WatcherApp:
             self._outline_btn(self.risk_retract_btn)
             self._outline_btn(self.risk_suspend_btn)
             self._outline_btn(self.risk_okay_btn)
-        self.clear_act_btn.configure(text_color=MUTED, hover_color=GREEN_SOFT)
+        self._outline_btn(self.clear_act_btn, muted=True)
         self.status_label.configure(text_color=MUTED)
         try:
             self.copyright_label.configure(text_color=MUTED)
@@ -2544,6 +2894,7 @@ class WatcherApp:
             "bidder_change": (GREEN_SOFT, GREEN_DARK, "BIDDER"),
             "sold": (GREEN_SOFT, GREEN, "SOLD"),
             "risk": (AMBER_SOFT, RED, "OPEN IN SELLER"),
+            "error": (AMBER_SOFT, RED, "ERROR"),
             "info": (THEMES[self.theme_mode]["info_bg"], MUTED, "INFO"),
         }
         bg, fg, tag = colors.get(kind, colors["info"])
@@ -3428,13 +3779,13 @@ class WatcherApp:
                                     lot_ids, item.buyer_id, reason=reason
                                 )
                             except Exception as exc:
-                                retract_errors = [str(exc) or type(exc).__name__]
+                                retract_errors = [user_message(exc, "Retract bids", service="CT Seller")]
                         elif lot_ids:
                             retract_errors = [
                                 "Retract skipped — this sale is not on this CT Seller login."
                             ]
                 except Exception as exc:
-                    msg = str(exc) or type(exc).__name__
+                    msg = user_message(exc, "Suspend bidder", service="CT Seller")
                     self.root.after(0, lambda m=msg: _fail(m))
                     return
                 names = ", ".join(title for _i, title in locations) or "your locations"
@@ -3601,7 +3952,7 @@ class WatcherApp:
                         lot_ids, item.buyer_id, reason=reason
                     )
                 except Exception as exc:
-                    msg = str(exc) or type(exc).__name__
+                    msg = user_message(exc, "Retract bids", service="CT Seller")
                     self.root.after(0, lambda m=msg: _fail(m))
                     return
                 self.root.after(0, lambda o=list(ok), e=list(errors): _ok(o, e))
@@ -3938,14 +4289,12 @@ class WatcherApp:
         buyer = "Buyer ✓" if self.token else "Buyer —"
         seller = "Seller ✓" if self.seller_token else "Seller —"
         self.login_var.set(f"{ee}  ·  {buyer}  ·  {seller}")
-        ok = bool(self.token and self.seller_token)
-        partial = bool(self.token or self.seller_token or self.estate_ez_token)
-        if ok:
-            self.login_badge.configure(text_color=GREEN, fg_color=GREEN_SOFT)
-        elif partial:
-            self.login_badge.configure(text_color=AMBER, fg_color=AMBER_SOFT)
-        else:
-            self.login_badge.configure(text_color=AMBER, fg_color=AMBER_SOFT)
+        for chip, name, signed_in in (
+            (self.ee_chip, "Estate-Ez", self.estate_ez_token),
+            (self.buyer_chip, "Buyer", self.token),
+            (self.seller_chip, "Seller", self.seller_token),
+        ):
+            chip.set(f"{name}: {'signed in' if signed_in else 'signed out'}", "ok" if signed_in else "warn")
 
     def _try_load_token_quiet(self) -> None:
         def work() -> None:
@@ -4165,11 +4514,11 @@ class WatcherApp:
                     result = sign_in_estate_ez(email, password, remember=remember_var.get())
                 except EstateEzSellerNotConnected as exc:
                     ee_token = load_estate_ez_token()
+                    note = str(exc) or "Connect CT Seller on Estate-Ez → Account, then sign in again."
 
                     def _partial() -> None:
                         self.estate_ez_token = ee_token
                         self._refresh_login_badge()
-                        note = str(exc) or "Connect CT Seller on Estate-Ez → Account, then sign in again."
                         self.status_var.set(note)
                         self._append_activity(note, kind="info")
                         _on_close()
@@ -4177,7 +4526,7 @@ class WatcherApp:
                     self.root.after(0, _partial)
                     return
                 except Exception as exc:
-                    msg = str(exc) or type(exc).__name__
+                    msg = user_message(exc, "Estate-Ez sign in", service="Estate-Ez")
                     self.root.after(0, lambda m=msg: _fail(m))
                     return
                 seller = result.get("seller") or {}
@@ -4409,7 +4758,7 @@ class WatcherApp:
                 try:
                     send_buyer_mfa_otp(token, channel, resend=resend)
                 except Exception as exc:
-                    msg = str(exc) or type(exc).__name__
+                    msg = user_message(exc, "Send buyer sign-in code", service="CTBids")
                     self.root.after(0, lambda m=msg: _fail(m))
                     return
                 where = "email" if channel == "email" else "phone"
@@ -4439,7 +4788,7 @@ class WatcherApp:
                     access = verify_buyer_mfa(token, code, trusted=trust_var.get())
                     _save_creds()
                 except Exception as exc:
-                    msg = str(exc) or type(exc).__name__
+                    msg = user_message(exc, "Verify buyer sign-in code", service="CTBids")
                     self.root.after(0, lambda m=msg: _fail(m))
                     return
                 self.root.after(0, lambda t=access: _ok(t))
@@ -4466,7 +4815,9 @@ class WatcherApp:
                     self.root.after(0, lambda c=challenge: _show_mfa(c))
                     return
                 except Exception as exc:
-                    msg = str(exc) or type(exc).__name__
+                    msg = user_message(
+                        exc, f"{kind.capitalize()} sign in", service="CT Seller" if kind == "seller" else "CTBids",
+                    )
                     self.root.after(0, lambda m=msg: _fail(m))
                     return
                 self.root.after(0, lambda t=access: _ok(t))
@@ -4514,7 +4865,9 @@ class WatcherApp:
                     token = open_login_window(sale, on_tokens=captured)
                     self.root.after(0, self._apply_token, token, True)
             except Exception as exc:
-                msg = str(exc) or type(exc).__name__
+                msg = user_message(
+                    exc, f"{kind.capitalize()} browser sign in", service="CT Seller" if kind == "seller" else "CTBids",
+                )
                 self.root.after(0, lambda m=msg: messagebox.showerror(APP_TITLE, m))
 
         threading.Thread(target=work, daemon=True).start()
@@ -4531,7 +4884,17 @@ class WatcherApp:
             sale_id = parse_sale_id(url)
             webbrowser.open(buyer_sale_url(sale_id))
         except Exception as exc:
-            messagebox.showerror(APP_TITLE, str(exc))
+            messagebox.showerror(APP_TITLE, user_message(exc, "Open sale"))
+
+    def _poll_seconds(self) -> float | None:
+        try:
+            poll = float(self.poll_var.get().strip() or "45")
+        except ValueError:
+            poll = 0.0
+        if poll <= 0:
+            messagebox.showerror(APP_TITLE, POLL_INTERVAL_MESSAGE)
+            return None
+        return poll
 
     def _on_start(self) -> None:
         try:
@@ -4558,9 +4921,11 @@ class WatcherApp:
         try:
             matched = self._match_seller_sale(sale)
             sale_id = matched.sale_id if matched else parse_sale_id(sale)
-            poll = float(self.poll_var.get().strip() or "45")
         except Exception as exc:
-            messagebox.showerror(APP_TITLE, str(exc))
+            messagebox.showerror(APP_TITLE, user_message(exc, "Start watching"))
+            return
+        poll = self._poll_seconds()
+        if poll is None:
             return
         url = matched.buyer_url if matched else buyer_sale_url(sale_id)
         self._start_sale(sale_id, url, poll)
@@ -4630,8 +4995,12 @@ class WatcherApp:
             on_auth_lost=lambda msg: self.root.after(0, self._on_auth_lost, msg),
             on_seller_auth_lost=lambda msg: self.root.after(0, self._on_seller_auth_lost, msg),
             on_end_snapshot=lambda snap, paths: self.root.after(0, self._on_end_snapshot, snap, paths),
+            on_push=lambda result, sid=sale_id: self.root.after(0, self._on_push_result, sid, result),
+            on_sync=lambda state, msg, sid=sale_id: self.root.after(0, self._on_sync_state, sid, state, msg),
             auto_save_on_end=bool(self.auto_save_var.get()),
         )
+        sess.syncing = False
+        sess.last_sync_error = ""
         sess.watcher = watcher
         self.watcher = watcher
         watcher.start()
@@ -4659,10 +5028,8 @@ class WatcherApp:
                 "No live sales on this CT Seller login yet.\n\nSign in to Seller, or paste a sale URL and click Start.",
             )
             return
-        try:
-            poll = float(self.poll_var.get().strip() or "45")
-        except Exception as exc:
-            messagebox.showerror(APP_TITLE, str(exc))
+        poll = self._poll_seconds()
+        if poll is None:
             return
         if not self._confirm_logins():
             return
@@ -4688,16 +5055,67 @@ class WatcherApp:
             watcher.stop()
         if sess:
             sess.watcher = None
+            sess.syncing = False
         if self.watcher is watcher:
             self.watcher = None
         self._sync_start_stop()
         title = sess.title if sess else "sale"
-        self.status_var.set(f"Stopped {title}.")
+        self._set_session_status(sess, f"Stopped {title}.")
+        self._refresh_session_chips()
         self._append_activity(f"Watcher stopped for {title}.", kind="info", session=sess)
 
+    def _set_session_status(self, sess: _WatchSession | None, message: str) -> None:
+        if sess is not None:
+            sess.last_status = message
+        if sess is None or sess is self._current_session():
+            self.status_var.set(message)
+
     def _on_session_status(self, sale_id: int, message: str) -> None:
+        sess = self._sessions.get(sale_id)
+        if sess is not None:
+            sess.last_status = message
         if sale_id == self._active_sale_id:
             self.status_var.set(message)
+
+    def _on_sync_state(self, sale_id: int, state: str, message: str = "") -> None:
+        sess = self._sessions.get(sale_id)
+        if sess is None:
+            return
+        now = datetime.now()
+        if state == "start":
+            sess.syncing = True
+        elif state == "ok":
+            sess.syncing = False
+            sess.last_sync_at = now
+            sess.last_sync_error = ""
+        elif state == "error":
+            sess.syncing = False
+            sess.last_sync_error = message or "Refresh failed."
+            sess.last_sync_error_at = now
+        if sale_id == self._active_sale_id:
+            self._refresh_session_chips()
+
+    def _on_push_result(self, sale_id: int, result: PushResult) -> None:
+        sess = self._sessions.get(sale_id)
+        if sess is None or not sess.push_status.record(result):
+            return
+        if result.outcome == FAILED and sess.push_status.consecutive_failures == 1:
+            self._append_activity(result.message, kind="error", session=sess)
+        if sale_id == self._active_sale_id:
+            self._refresh_session_chips()
+        self._refresh_push_window()
+
+    def _refresh_session_chips(self) -> None:
+        if getattr(self, "sync_chip", None) is None:
+            return
+        sess = self._current_session()
+        if sess is None:
+            self.sync_chip.set("Not watching", "idle")
+            self.push_chip.set("Estate-Ez push: not yet", "idle")
+            return
+        text, level = sess.sync_summary()
+        self.sync_chip.set(text, level)
+        self.push_chip.set(sess.push_status.summary(), sess.push_status.level)
 
     def _on_export_pdf(self) -> None:
         snap = self._latest_snap
@@ -4736,7 +5154,7 @@ class WatcherApp:
                     msg += f"\n\nHTML copy:\n{html_path}"
                 self.root.after(0, lambda: self._export_done(True, msg, str(pdf_path)))
             except Exception as exc:  # noqa: BLE001
-                err = str(exc)
+                err = user_message(exc, "Export PDF")
                 self.root.after(0, lambda: self._export_done(False, err, ""))
 
         threading.Thread(target=work, daemon=True).start()
@@ -4948,7 +5366,8 @@ class WatcherApp:
 
 
 def main() -> None:
-    ctk.set_default_color_theme("dark-blue")
+    setup_logging(APP_VERSION)
+    apply_ctk_defaults()
     root = ctk.CTk()
     root.configure(fg_color=THEMES["dark"]["window"])
     WatcherApp(root, manage_window=True)

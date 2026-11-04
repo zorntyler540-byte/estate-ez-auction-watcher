@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -24,6 +25,17 @@ import requests
 
 from ctbids_client import CtbidsClient
 from seller_client import SellerClient
+
+try:
+    import secure_store
+    from http_retry import DEFAULT, NO_RETRY, describe_url, request_with_retry
+except ImportError:  # noqa: BLE001 - package vs script import
+    from sale_watcher import secure_store
+    from sale_watcher.http_retry import DEFAULT, NO_RETRY, describe_url, request_with_retry
+
+log = logging.getLogger("sale_watcher.auth")
+
+CTBIDS_UNREACHABLE_MESSAGE = "Could not reach CTBids. Check this PC's internet connection and try again."
 
 BUYER_REFRESH_URL = "https://api.ctbids.com/services/api/v1/buyer/token/refresh"
 SELLER_REFRESH_URL = "https://seller.ctbids.com/services/api/v1/token/refresh"
@@ -42,7 +54,8 @@ _JS_READ_TOKENS = """() => ({
 _buyer_profile_lock = threading.Lock()
 _seller_profile_lock = threading.Lock()
 _password_login_blocked_until: dict[str, float] = {}
-_secret_io_lock = threading.Lock()
+# Re-entrant: clear_secret_if_matches reads (and may migrate) while holding it.
+_secret_io_lock = threading.RLock()
 # One refresh / login / mint per kind at a time; waiters re-read the saved pair.
 _ensure_locks: dict[str, threading.RLock] = {
     "buyer": threading.RLock(),
@@ -96,13 +109,13 @@ def _replace_file(src: str, dst: Path) -> None:
             time.sleep(0.05 * (attempt + 1))
 
 
-def atomic_write_text(path: Path, text: str) -> None:
+def atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write via a temp file in the same folder + os.replace, so readers never see half a token."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
         _replace_file(tmp, path)
@@ -114,10 +127,15 @@ def atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    atomic_write_bytes(path, text.encode("utf-8"))
+
+
 def write_secret(path: Path, value: str | None) -> None:
+    """Save a token DPAPI-encrypted (plaintext + warning off Windows), or delete it for None."""
     with _secret_io_lock:
         if value and value.strip():
-            atomic_write_text(path, value.strip())
+            atomic_write_bytes(path, secure_store.encode_token(value.strip()))
         else:
             try:
                 path.unlink()
@@ -126,12 +144,20 @@ def write_secret(path: Path, value: str | None) -> None:
 
 
 def read_secret(path: Path) -> str | None:
-    if not path.exists():
-        return None
-    try:
-        return path.read_text(encoding="utf-8").strip() or None
-    except OSError:
-        return None
+    """Read a token file; a legacy plaintext file is re-written encrypted on first read."""
+    with _secret_io_lock:
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return None
+        value, needs_migration = secure_store.decode_token(raw)
+        if value and needs_migration:
+            try:
+                atomic_write_bytes(path, secure_store.encode_token(value))
+                log.info("Encrypted %s with Windows DPAPI", path.name)
+            except Exception as exc:  # noqa: BLE001 - keep using the token; retry migration next read
+                log.warning("Could not encrypt %s yet: %s", path.name, type(exc).__name__)
+        return value
 
 
 def clear_secret_if_matches(path: Path, failed: str | None) -> bool:
@@ -260,18 +286,24 @@ def refresh_seller_access(refresh: str) -> str | None:
     if not refresh:
         return None
     try:
-        resp = requests.get(
-            SELLER_REFRESH_URL,
-            headers={
-                "Authorization": f"Bearer {refresh}",
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
-            timeout=20,
+        resp = request_with_retry(
+            lambda: requests.get(
+                SELLER_REFRESH_URL,
+                headers={
+                    "Authorization": f"Bearer {refresh}",
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+                timeout=20,
+            ),
+            policy=DEFAULT,
+            label=f"CT Seller {describe_url('get', SELLER_REFRESH_URL)}",
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - a refresh failure just means "not refreshed"
+        log.warning("CT Seller token refresh could not connect: %s", type(exc).__name__)
         return None
     if resp.status_code in (401, 403):
+        log.info("CT Seller refresh token was refused (HTTP %s)", resp.status_code)
         return None
     try:
         return _parse_new_access(resp.json())
@@ -320,44 +352,12 @@ def _save_username(kind: str, username: str) -> None:
 
 
 def _dpapi_protect(plain: str) -> bytes:
-    import ctypes
-    from ctypes import wintypes
-
-    class DATA_BLOB(ctypes.Structure):
-        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
-
-    raw = plain.encode("utf-8")
-    buf = ctypes.create_string_buffer(raw, len(raw))
-    blob_in = DATA_BLOB(len(raw), ctypes.cast(buf, ctypes.POINTER(ctypes.c_byte)))
-    blob_out = DATA_BLOB()
-    if not ctypes.windll.crypt32.CryptProtectData(
-        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
-    ):
-        raise OSError("Could not protect password on this PC.")
-    try:
-        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
-    finally:
-        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+    # No entropy: existing *_password.dpapi files were written without it.
+    return secure_store.protect(plain.encode("utf-8"))
 
 
 def _dpapi_unprotect(blob: bytes) -> str:
-    import ctypes
-    from ctypes import wintypes
-
-    class DATA_BLOB(ctypes.Structure):
-        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
-
-    buf = ctypes.create_string_buffer(blob, len(blob))
-    blob_in = DATA_BLOB(len(blob), ctypes.cast(buf, ctypes.POINTER(ctypes.c_byte)))
-    blob_out = DATA_BLOB()
-    if not ctypes.windll.crypt32.CryptUnprotectData(
-        ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)
-    ):
-        raise OSError("Could not read saved password.")
-    try:
-        return ctypes.string_at(blob_out.pbData, blob_out.cbData).decode("utf-8")
-    finally:
-        ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+    return secure_store.unprotect(blob).decode("utf-8")
 
 
 def load_saved_password(kind: str) -> str:
@@ -375,7 +375,7 @@ def save_login_credentials(kind: str, username: str, password: str | None) -> No
     _save_username(kind, username)
     path = _password_path(kind)
     if password:
-        path.write_bytes(_dpapi_protect(password))
+        atomic_write_bytes(path, _dpapi_protect(password))
     elif path.exists():
         path.unlink()
 
@@ -457,7 +457,8 @@ def _post_ctbids(url: str, payload: dict) -> tuple[int, object, str]:
             timeout=30,
         )
     except requests.RequestException as exc:
-        raise RuntimeError(f"Could not reach CTBids: {exc}") from exc
+        log.warning("CTBids code request could not connect: %s", type(exc).__name__)
+        raise RuntimeError(CTBIDS_UNREACHABLE_MESSAGE) from exc
     text = resp.text or ""
     try:
         body: object = resp.json() if resp.content else {}
@@ -578,19 +579,25 @@ def login_with_password(kind: str, username: str, password: str) -> str:
         }
     }
     try:
-        resp = requests.post(
-            url,
-            data=json.dumps(payload),
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0",
-            },
-            timeout=30,
+        resp = request_with_retry(
+            lambda: requests.post(
+                url,
+                data=json.dumps(payload),
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0",
+                },
+                timeout=30,
+            ),
+            policy=DEFAULT if kind == "seller" else NO_RETRY,
+            label=f"{kind} sign in {describe_url('post', url)}",
         )
     except requests.RequestException as exc:
-        raise RuntimeError(f"Could not reach CTBids: {exc}") from exc
+        log.warning("%s sign in could not connect: %s", kind, type(exc).__name__)
+        raise RuntimeError(CTBIDS_UNREACHABLE_MESSAGE) from exc
     if resp.status_code >= 400:
+        log.warning("%s sign in refused (HTTP %s)", kind, resp.status_code)
         raise RuntimeError(_login_error_message(resp))
     try:
         body = resp.json() if resp.content else {}
@@ -620,6 +627,7 @@ def login_from_saved(kind: str) -> str | None:
         return None
     except Exception:
         _password_login_blocked_until[kind] = time.time() + 15 * 60
+        log.warning("Saved %s login failed; not retrying for 15 min", kind)
         return None
 
 

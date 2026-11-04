@@ -16,6 +16,14 @@ python suite_app.py
 
 Local `config.json` and `.env` stay off git (franchise name and optional API overrides). CTBids / Estate-Ez passwords are stored on this PC only, not in the repo. Send-out zips use `config.franchise.json`.
 
+Saved session tokens and passwords under `%LOCALAPPDATA%\SaleWatcher` are encrypted with Windows DPAPI for the signed-in Windows user; older plaintext token files are encrypted the first time they are read. Off Windows (tests, dev) tokens fall back to plaintext with a warning in the log.
+
+Logs: `%LOCALAPPDATA%\SaleWatcher\logs\watcher.log` (5 files × 2 MB, rotated). Tokens, passwords and one-time codes are redacted before anything is written. Open the folder from **Logs** (bottom right) or **About**.
+
+Tests: `python -m pytest -q` from the repo root (the Live Watch UI tests skip when no display is available).
+
+Bump `APP_VERSION` in `brand.py` for every franchise build; it shows in the window title, About, and every log line.
+
 ## Build a franchise zip
 
 ```text

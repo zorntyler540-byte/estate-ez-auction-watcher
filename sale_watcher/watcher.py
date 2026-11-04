@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from datetime import datetime, timezone
@@ -48,6 +49,8 @@ try:
         sign_in_estate_ez,
     )
     from export_report import live_snapshot_path, save_closing_snapshot, write_closing_csv
+    from friendly_errors import friendly_error
+    from push_status import PushResult
 except ImportError:  # noqa: BLE001 - package vs script import
     from sale_watcher.auth import (
         BuyerMfaRequired,
@@ -76,10 +79,17 @@ except ImportError:  # noqa: BLE001 - package vs script import
         sign_in_estate_ez,
     )
     from sale_watcher.export_report import live_snapshot_path, save_closing_snapshot, write_closing_csv
+    from sale_watcher.friendly_errors import friendly_error
+    from sale_watcher.push_status import PushResult
+
+log = logging.getLogger("sale_watcher.watcher")
 
 ProgressFn = Callable[[str], None]
 SnapshotFn = Callable[[Snapshot, list[BidChange]], None]
 EndSnapshotFn = Callable[[Snapshot, list[Path]], None]
+PushFn = Callable[[PushResult], None]
+# ("start" | "ok" | "error", friendly message)
+SyncFn = Callable[[str, str], None]
 
 
 def config_path() -> Path:
@@ -118,6 +128,8 @@ class SaleWatcher:
         on_seller_auth_lost: ProgressFn | None = None,
         on_end_snapshot: EndSnapshotFn | None = None,
         auto_save_on_end: bool = True,
+        on_push: PushFn | None = None,
+        on_sync: SyncFn | None = None,
     ) -> None:
         self.sale_id = parse_sale_id(sale_url_or_id)
         self.poll_seconds = max(10.0, float(poll_seconds))
@@ -126,6 +138,8 @@ class SaleWatcher:
         self.on_auth_lost = on_auth_lost
         self.on_seller_auth_lost = on_seller_auth_lost
         self.on_end_snapshot = on_end_snapshot
+        self.on_push = on_push
+        self.on_sync = on_sync
         self.auto_save_on_end = bool(auto_save_on_end)
         self.client = CtbidsClient(access_token)
         self.seller = SellerClient(seller_token)
@@ -150,8 +164,16 @@ class SaleWatcher:
         self._live_csv_announced = False
 
     def say(self, msg: str) -> None:
+        log.info("sale %s: %s", self.sale_id, msg)
         if self.on_status:
             self.on_status(msg)
+
+    def _sync(self, state: str, message: str = "") -> None:
+        if self.on_sync:
+            try:
+                self.on_sync(state, message)
+            except Exception:  # noqa: BLE001 - a UI callback must not stop polling
+                log.exception("on_sync callback failed")
 
     def set_token(self, token: str | None) -> None:
         was = self.client.access_token
@@ -306,7 +328,8 @@ class SaleWatcher:
         except PermissionError:
             raise
         except Exception as exc:  # noqa: BLE001
-            self.say(f"Could not check suspension for buyer {buyer_id}: {exc}")
+            log.warning("Suspension check failed for buyer %s", buyer_id, exc_info=True)
+            self.say(f"Could not check suspension for buyer {buyer_id}: {friendly_error(exc)}")
             suspended = False
         self._suspend_cache[buyer_id] = suspended
         time.sleep(0.04)
@@ -325,7 +348,8 @@ class SaleWatcher:
                 return self._ensure_suspend_here(buyer_id)
             return False
         except Exception as exc:  # noqa: BLE001
-            self.say(f"Could not check our location suspend for buyer {buyer_id}: {exc}")
+            log.warning("Location suspend check failed for buyer %s", buyer_id, exc_info=True)
+            self.say(f"Could not check our location suspend for buyer {buyer_id}: {friendly_error(exc)}")
             here = False
         self._suspend_here_cache[buyer_id] = here
         time.sleep(0.04)
@@ -368,7 +392,8 @@ class SaleWatcher:
                 return self._ensure_payment(buyer_id)
             return None
         except Exception as exc:  # noqa: BLE001
-            self.say(f"Could not check invoices for buyer {buyer_id}: {exc}")
+            log.warning("Invoice check failed for buyer %s", buyer_id, exc_info=True)
+            self.say(f"Could not check invoices for buyer {buyer_id}: {friendly_error(exc)}")
             return None
         unpaid = int(summary.unpaid_count) if summary else 0
         paid = int(summary.paid_count) if summary else 0
@@ -425,7 +450,8 @@ class SaleWatcher:
             elif newly_closed:
                 self.say(f"Saved {newly_closed} newly closed lot(s) to {path.name}")
         except Exception as exc:  # noqa: BLE001
-            self.say(f"Could not update live bid file: {exc}")
+            log.warning("Live bid file update failed", exc_info=True)
+            self.say(f"Could not update live bid file: {friendly_error(exc)}")
 
     def _maybe_save_closing_snapshot(self, prev: Snapshot | None, snap: Snapshot) -> None:
         """When the last lot closes, dump high bids before CTBids zeros them."""
@@ -450,7 +476,8 @@ class SaleWatcher:
             if self.on_end_snapshot:
                 self.on_end_snapshot(snap, paths)
         except Exception as exc:  # noqa: BLE001
-            self.say(f"Could not auto-save closing snapshot: {exc}")
+            log.warning("Closing snapshot save failed", exc_info=True)
+            self.say(f"Could not auto-save closing snapshot: {friendly_error(exc)}")
 
     def _lookup_names(self, item_ids: list[int], items_by_id: dict[int, object]) -> int:
         """Fetch high-bidder nicknames + account flags for the given item ids."""
@@ -467,7 +494,8 @@ class SaleWatcher:
                     continue
                 break
             except Exception as exc:  # noqa: BLE001
-                self.say(f"Could not read bidder for item {item_id}: {exc}")
+                log.warning("Bidder lookup failed for item %s", item_id, exc_info=True)
+                self.say(f"Could not read bidder for item {item_id}: {friendly_error(exc, service='CTBids')}")
                 self._pending_names.add(item_id)
                 i += 1
                 continue
@@ -686,21 +714,23 @@ class SaleWatcher:
         return snap, changes
 
     def _push_engagement(self, snap: Snapshot) -> None:
-        """POST views/watchers/bids for this sale. Failures stay on the status line."""
+        """POST views/watchers/bids for this sale and hand the per-sale result to ``on_push``."""
         try:
-            from engagement_sync import push_sale_snapshot
+            from engagement_sync import push_sale_snapshot_result
         except ImportError:  # noqa: BLE001 - package vs script import
-            from sale_watcher.engagement_sync import push_sale_snapshot
-        try:
-            note = push_sale_snapshot(self.sale_id, snap, self.seller)
-        except Exception as exc:  # noqa: BLE001 - a snapshot failure must not stop Live Watch
-            self.say(f"Engagement snapshot not sent ({exc}).")
-            return
-        if note:
-            self.say(note)
+            from sale_watcher.engagement_sync import push_sale_snapshot_result
+        result = push_sale_snapshot_result(self.sale_id, snap, self.seller)
+        if self.on_push:
+            try:
+                self.on_push(result)
+            except Exception:  # noqa: BLE001 - a UI callback must not stop polling
+                log.exception("on_push callback failed")
+        if result.message:
+            self.say(result.message)
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            self._sync("start")
             try:
                 snap, changes = self.poll_once()
                 if self.on_update:
@@ -710,8 +740,15 @@ class SaleWatcher:
                     f"OK — {snap.bidding_count} bidding / {snap.open_count} open / "
                     f"{snap.sold_count} sold · hammer ${snap.hammer_total:,.2f} · {named} username(s)"
                 )
+                self._sync("ok")
             except PermissionError as exc:
-                self.say(str(exc))
+                message = str(exc) or "A CTBids login expired. Sign in again."
+                log.warning("sale %s refresh: %s", self.sale_id, message)
+                self.say(message)
+                self._sync("error", message)
             except Exception as exc:  # noqa: BLE001
-                self.say(f"Refresh error: {exc}")
+                log.exception("sale %s refresh failed", self.sale_id)
+                message = friendly_error(exc, service="CTBids")
+                self.say(f"Refresh failed: {message}")
+                self._sync("error", message)
             self._stop.wait(self.poll_seconds)

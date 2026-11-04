@@ -7,15 +7,19 @@ JWT (never the CT Seller password).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
 import requests
+
+try:
+    from http_retry import CONNECT_ONLY, DEFAULT, parse_retry_after, request_with_retry
+except ImportError:  # noqa: BLE001 - package vs script import
+    from sale_watcher.http_retry import CONNECT_ONLY, DEFAULT, parse_retry_after, request_with_retry
 
 try:
     from auth import (
@@ -46,12 +50,18 @@ except ImportError:  # noqa: BLE001 - package vs script import
         write_secret,
     )
 
+log = logging.getLogger("sale_watcher.estate_ez")
+
 DEFAULT_API_BASE = "https://caringtransitions-ai-production.up.railway.app"
 LOGIN_KIND = "estateez"
 TIMEOUT = 30
 LOGIN_BLOCK_SECONDS = 15 * 60
 MINT_COOLDOWN_SECONDS = 5 * 60
 MAX_RETRY_AFTER_SECONDS = 6 * 60 * 60
+
+UNREACHABLE_MESSAGE = (
+    "Could not reach Estate-Ez. Check this PC's internet connection and try again."
+)
 
 MINT_UNAVAILABLE_MESSAGE = (
     "Estate-Ez signed in, but this Estate-Ez account can't load a CT Seller session. "
@@ -151,25 +161,7 @@ def _detail(resp: requests.Response) -> str:
 
 def retry_after_seconds(resp: requests.Response | None, *, now: float | None = None) -> float | None:
     """Seconds from a Retry-After header (delta-seconds or HTTP-date), clamped. None if absent."""
-    if resp is None:
-        return None
-    raw = str((resp.headers or {}).get("Retry-After") or "").strip()
-    if not raw:
-        return None
-    try:
-        seconds = float(raw)
-    except ValueError:
-        try:
-            when = parsedate_to_datetime(raw)
-        except (TypeError, ValueError, IndexError):
-            return None
-        if when is None:
-            return None
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        current = datetime.fromtimestamp(time.time() if now is None else now, tz=timezone.utc)
-        seconds = (when - current).total_seconds()
-    return min(max(0.0, seconds), float(MAX_RETRY_AFTER_SECONDS))
+    return parse_retry_after(resp, now=now, cap=MAX_RETRY_AFTER_SECONDS)
 
 
 def _start_mint_cooldown(resp: requests.Response | None) -> float:
@@ -235,15 +227,23 @@ def login_estate_ez(email: str, password: str) -> str:
     user = (email or "").strip()
     if not user or not password:
         raise EstateEzAuthError("Enter your Estate-Ez email and password.")
+    url = f"{api_base()}/auth/login"
     try:
-        resp = requests.post(
-            f"{api_base()}/auth/login",
-            json={"email": user, "password": password},
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
-            timeout=TIMEOUT,
+        resp = request_with_retry(
+            lambda: requests.post(
+                url,
+                json={"email": user, "password": password},
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+                timeout=TIMEOUT,
+            ),
+            policy=DEFAULT,
+            label="Estate-Ez POST /auth/login",
         )
     except requests.RequestException as exc:
-        raise EstateEzAuthError(f"Could not reach Estate-Ez ({exc}).") from exc
+        log.warning("Estate-Ez login could not connect: %s", type(exc).__name__)
+        raise EstateEzAuthError(UNREACHABLE_MESSAGE) from exc
+    if resp.status_code >= 400:
+        log.warning("Estate-Ez login refused (HTTP %s)", resp.status_code)
     if resp.status_code == 401:
         raise EstateEzAuthError("Invalid Estate-Ez login.")
     if resp.status_code == 403:
@@ -259,6 +259,7 @@ def login_estate_ez(email: str, password: str) -> str:
         raise EstateEzAuthError("Estate-Ez signed in but did not return a session.")
     save_estate_ez_token(token)
     _set_login_block(0)
+    log.info("Estate-Ez signed in")
     return token
 
 
@@ -281,18 +282,26 @@ def fetch_ctseller_session(ee_token: str, *, interactive: bool = False) -> dict[
         raise EstateEzAuthError("Sign in to Estate-Ez first.")
     with _mint_lock:
         _mint_gate(interactive=interactive)
+        url = f"{api_base()}/integrations/ctseller/session"
         try:
-            resp = requests.post(
-                f"{api_base()}/integrations/ctseller/session",
-                headers={
-                    "Accept": "application/json",
-                    "Authorization": f"Bearer {token}",
-                },
-                timeout=TIMEOUT,
+            resp = request_with_retry(
+                lambda: requests.post(
+                    url,
+                    headers={
+                        "Accept": "application/json",
+                        "Authorization": f"Bearer {token}",
+                    },
+                    timeout=TIMEOUT,
+                ),
+                policy=CONNECT_ONLY,
+                label="Estate-Ez POST /integrations/ctseller/session",
             )
         except requests.RequestException as exc:
-            _start_mint_cooldown(None)
-            raise EstateEzAuthError(f"Could not reach Estate-Ez ({exc}).") from exc
+            seconds = _start_mint_cooldown(None)
+            log.warning("CT Seller mint could not connect (%s); cooling down %.0fs", type(exc).__name__, seconds)
+            raise EstateEzAuthError(UNREACHABLE_MESSAGE) from exc
+        if resp.status_code >= 400:
+            log.warning("CT Seller mint refused (HTTP %s)", resp.status_code)
         if resp.status_code == 401:
             clear_estate_ez_token_if(token)
             raise EstateEzAuthError(_detail(resp) or "Estate-Ez session expired. Sign in again.")
@@ -326,6 +335,7 @@ def fetch_ctseller_session(ee_token: str, *, interactive: bool = False) -> dict[
         save_seller_access_token(access)
         if refresh:
             save_seller_refresh_token(refresh)
+        log.info("CT Seller session loaded from Estate-Ez")
         return {
             "access_token": access,
             "refresh_token": refresh,
@@ -344,6 +354,7 @@ def login_estate_ez_from_saved() -> str | None:
         return login_estate_ez(email, password)
     except EstateEzAuthError:
         _set_login_block(LOGIN_BLOCK_SECONDS)
+        log.warning("Saved Estate-Ez login failed; not retrying for %d min", LOGIN_BLOCK_SECONDS // 60)
         return None
 
 
@@ -380,7 +391,8 @@ def pull_seller_from_estate_ez(rejected: frozenset[str] | set[str] = frozenset()
         EstateEzSellerNotConnected,
         EstateEzMintUnavailable,
         EstateEzMintCoolingDown,
-    ):
+    ) as exc:
+        log.info("Quiet CT Seller recovery skipped: %s", type(exc).__name__)
         return None
     return session.get("access_token") or None
 

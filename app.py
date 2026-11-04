@@ -6,6 +6,7 @@ so the window never freezes.
 """
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
@@ -26,8 +27,10 @@ from report_engine import (
     save_config,
 )
 from build_sku_rollup_report import parse_sku_prefixes
+from sale_watcher.friendly_errors import friendly_error
 
 prepare_runtime()
+log = logging.getLogger("sale_watcher.reports")
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -38,35 +41,35 @@ except Exception:  # noqa: BLE001 - drag and drop is an optional nicety
 
 APP_TITLE = "CTBids Sale Report Generator"
 
-# Match Sale Suite / Estate Inventory SaaS look
+# Estate-EZ website tokens — keep in sync with sale_watcher/app.py THEMES
 THEMES = {
     "light": {
-        "accent": "#2a9d9c",
-        "accent_hover": "#238887",
-        "accent_soft": "#e6f6f5",
-        "text": "#0f1720",
-        "muted": "#6b7280",
+        "accent": "#d63d0d",
+        "accent_hover": "#b8340b",
+        "accent_soft": "#fde9e1",
+        "text": "#1c1917",
+        "muted": "#57534e",
         "panel": "#ffffff",
         "card": "#ffffff",
-        "window": "#e8eef2",
-        "on_accent": "#0b0e14",
-        "danger": "#b23a48",
-        "danger_hover": "#8c2c37",
-        "log_bg": "#f7faf8",
+        "window": "#f5f5f4",
+        "on_accent": "#140500",
+        "danger": "#b91c1c",
+        "danger_hover": "#991b1b",
+        "log_bg": "#fafaf9",
     },
     "dark": {
-        "accent": "#3fc1c0",
-        "accent_hover": "#2ba8a7",
-        "accent_soft": "#15353a",
-        "text": "#e8eef2",
-        "muted": "#8b95a5",
-        "panel": "#1a1f26",
-        "card": "#151a21",
-        "window": "#0b0e14",
-        "on_accent": "#0b0e14",
+        "accent": "#ff4d1a",
+        "accent_hover": "#ff7347",
+        "accent_soft": "#351c17",
+        "text": "#f5f5f4",
+        "muted": "#a8a29e",
+        "panel": "#141416",
+        "card": "#141416",
+        "window": "#070708",
+        "on_accent": "#140500",
         "danger": "#ef4444",
         "danger_hover": "#dc2626",
-        "log_bg": "#12161c",
+        "log_bg": "#0e0e10",
     },
 }
 
@@ -649,8 +652,10 @@ class ReportApp:
 
     def _on_error(self, exc: Exception) -> None:
         self._set_busy(False)
-        self._log(f"Error: {exc}")
-        messagebox.showerror(APP_TITLE, str(exc))
+        log.warning("Report generation failed", exc_info=exc)
+        message = friendly_error(exc, service="CT Seller")
+        self._log(f"Error: {message}")
+        messagebox.showerror(APP_TITLE, message)
 
     def _on_done(self, result: dict) -> None:
         self._set_busy(False)

@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
-hiddenimports = ['brand', 'pandas', 'openpyxl', 'requests', 'sale_watcher.app', 'sale_watcher.watcher', 'sale_watcher.auth', 'sale_watcher.estate_ez', 'sale_watcher.ctbids_client', 'sale_watcher.seller_client', 'sale_watcher.export_report', 'report_engine', 'build_active_sale_report', 'build_end_of_sale_report', 'build_sku_rollup_report', 'extract_sku_prefixes', 'runtime_paths']
+hiddenimports = ['brand', 'pandas', 'openpyxl', 'requests', 'sale_watcher.app', 'sale_watcher.watcher', 'sale_watcher.auth', 'sale_watcher.estate_ez', 'sale_watcher.ctbids_client', 'sale_watcher.seller_client', 'sale_watcher.export_report', 'sale_watcher.engagement_sync', 'sale_watcher.http_retry', 'sale_watcher.secure_store', 'sale_watcher.app_logging', 'sale_watcher.friendly_errors', 'sale_watcher.push_status', 'engagement_sync', 'http_retry', 'secure_store', 'app_logging', 'friendly_errors', 'push_status', 'report_engine', 'build_active_sale_report', 'build_end_of_sale_report', 'build_sku_rollup_report', 'extract_sku_prefixes', 'runtime_paths']
 tmp_ret = collect_all('customtkinter')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('tkinterdnd2')

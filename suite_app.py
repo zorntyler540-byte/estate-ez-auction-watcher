@@ -23,10 +23,20 @@ from app import ReportApp, _DND_AVAILABLE  # noqa: E402
 if _DND_AVAILABLE:
     from app import _DnDCTk  # noqa: E402
 
-from sale_watcher.app import THEMES, WatcherApp, apply_sizable_main_window, save_main_window_layout  # noqa: E402
-from brand import APP_NAME  # noqa: E402
+from sale_watcher.app import (  # noqa: E402
+    BTN_RADIUS,
+    FONT_BOLD,
+    THEMES,
+    WatcherApp,
+    apply_ctk_defaults,
+    apply_sizable_main_window,
+    install_tk_error_handler,
+    save_main_window_layout,
+)
+from app_logging import setup_logging  # noqa: E402  (same module object sale_watcher.app uses)
+from brand import APP_TITLE_WITH_VERSION, APP_VERSION  # noqa: E402
 
-SUITE_TITLE = APP_NAME
+SUITE_TITLE = APP_TITLE_WITH_VERSION
 WINDOW_BG = THEMES["dark"]["window"]
 ACCENT = THEMES["dark"]["green"]
 PANEL = THEMES["dark"]["panel"]
@@ -38,6 +48,7 @@ class SaleSuiteApp:
         self.dnd = dnd
         root.title(SUITE_TITLE)
         root.configure(fg_color=WINDOW_BG)
+        install_tk_error_handler(root)
 
         shell = ctk.CTkFrame(root, fg_color="transparent")
         shell.pack(fill="both", expand=True, padx=4, pady=4)
@@ -45,14 +56,20 @@ class SaleSuiteApp:
         self.tabs = ctk.CTkTabview(
             shell,
             fg_color=PANEL,
+            border_width=1,
+            border_color=THEMES["dark"]["border"],
             segmented_button_fg_color=THEMES["dark"]["card_bg"],
             segmented_button_selected_color=ACCENT,
             segmented_button_selected_hover_color=THEMES["dark"]["green_hover"],
             segmented_button_unselected_color=THEMES["dark"]["card_bg"],
             segmented_button_unselected_hover_color=THEMES["dark"]["row_alt"],
-            text_color=THEMES["dark"]["on_accent"],
+            text_color=THEMES["dark"]["text"],
             corner_radius=12,
         )
+        try:
+            self.tabs._segmented_button.configure(font=(FONT_BOLD, 13), corner_radius=BTN_RADIUS)
+        except Exception:  # noqa: BLE001 - private CTk attribute; cosmetic only
+            pass
         self.tabs.pack(fill="both", expand=True)
         watch_tab = self.tabs.add("Live Watch")
         risk_tab = self.tabs.add("At risk")
@@ -91,8 +108,9 @@ class SaleSuiteApp:
 
 def main() -> None:
     prepare_runtime()
+    setup_logging(APP_VERSION)
     ctk.set_appearance_mode("dark")
-    ctk.set_default_color_theme("dark-blue")
+    apply_ctk_defaults()
 
     root = None
     dnd = False

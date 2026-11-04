@@ -5,6 +5,7 @@ Bidder names, buyer ids, emails, phones, addresses, and invoices stay on the PC.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from dataclasses import dataclass, field
@@ -15,8 +16,16 @@ import requests
 
 try:
     from ctbids_client import FetchReport, LiveItem, Snapshot, buyer_sale_url
+    from friendly_errors import friendly_error
+    from http_retry import DEFAULT, request_with_retry
+    from push_status import FAILED, PARTIAL, SENT, SKIPPED, PushResult
 except ImportError:  # noqa: BLE001 - package vs script import
     from sale_watcher.ctbids_client import FetchReport, LiveItem, Snapshot, buyer_sale_url
+    from sale_watcher.friendly_errors import friendly_error
+    from sale_watcher.http_retry import DEFAULT, request_with_retry
+    from sale_watcher.push_status import FAILED, PARTIAL, SENT, SKIPPED, PushResult
+
+log = logging.getLogger("sale_watcher.engagement")
 
 
 def _estate_ez():
@@ -288,19 +297,26 @@ def build_snapshot_body(
 
 def post_snapshot_body(token: str, body: dict[str, Any]) -> dict[str, Any]:
     ee = _estate_ez()
+    url = f"{ee.api_base()}/integrations/engagement/snapshots"
     try:
-        resp = requests.post(
-            f"{ee.api_base()}/integrations/engagement/snapshots",
-            json=body,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-            timeout=TIMEOUT,
+        # Each body carries captured_at and older ones are never re-sent, so a retry is safe.
+        resp = request_with_retry(
+            lambda: requests.post(
+                url,
+                json=body,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
+                timeout=TIMEOUT,
+            ),
+            policy=DEFAULT,
+            label="Estate-Ez POST /integrations/engagement/snapshots",
         )
     except requests.RequestException as exc:
-        raise RuntimeError(f"Could not reach Estate-Ez ({exc}).") from exc
+        log.warning("Engagement snapshot could not connect: %s", type(exc).__name__)
+        raise RuntimeError(ee.UNREACHABLE_MESSAGE) from exc
     if resp.status_code == 401:
         ee.clear_estate_ez_token_if(token)
         raise RuntimeError("Estate-Ez session expired. Sign in again.")
@@ -308,9 +324,10 @@ def post_snapshot_body(token: str, body: dict[str, Any]) -> dict[str, Any]:
         detail = ""
         try:
             payload = resp.json()
-            detail = str(payload.get("detail") or "")
+            detail = str(payload.get("detail") or "") if isinstance(payload, dict) else ""
         except ValueError:
             detail = ""
+        log.warning("Engagement snapshot refused (HTTP %s)", resp.status_code)
         raise RuntimeError(detail or f"Estate-Ez rejected the snapshot ({resp.status_code}).")
     try:
         return resp.json()
@@ -334,26 +351,55 @@ def _is_stale(sale_id: int, captured_at: datetime) -> bool:
 
 
 def push_sale_snapshot(sale_id: int, snap: Snapshot, seller: Any) -> str:
-    """Pull views/watchers, drop bidder fields, POST. Returns a status line."""
+    """Pull views/watchers, drop bidder fields, POST. Returns a status line; raises if the POST fails."""
+    return _push(int(sale_id), snap, seller).message
+
+
+def push_sale_snapshot_result(sale_id: int, snap: Snapshot, seller: Any) -> PushResult:
+    """Like ``push_sale_snapshot`` but never raises: a failure comes back as outcome ``failed``."""
     sale_id = int(sale_id)
+    try:
+        result = _push(sale_id, snap, seller)
+    except Exception as exc:  # noqa: BLE001 - a snapshot failure must not stop Live Watch
+        log.warning("Engagement snapshot for sale %s failed", sale_id, exc_info=True)
+        reason = friendly_error(exc, service="Estate-Ez")
+        return PushResult(
+            sale_id=sale_id,
+            outcome=FAILED,
+            message=f"Engagement snapshot not sent: {reason}",
+            error=reason,
+        )
+    if result.outcome != SKIPPED or result.message:
+        log.info("Engagement push sale %s: %s — %s", sale_id, result.outcome, result.message)
+    return result
+
+
+def _skipped(sale_id: int, message: str) -> PushResult:
+    return PushResult(sale_id=sale_id, outcome=SKIPPED, message=message)
+
+
+def _push(sale_id: int, snap: Snapshot, seller: Any) -> PushResult:
     live_by_id = snap.items if snap and snap.items else {}
     pending_by_id = getattr(snap, "pending_items", None) or {}
     items = list(live_by_id.values()) + [
         it for item_id, it in pending_by_id.items() if item_id not in live_by_id
     ]
     if not items:
-        return ""
+        return _skipped(sale_id, "")
     captured_at = _as_utc(getattr(snap, "captured_at", None) or datetime.now(timezone.utc))
     stale_note = f"Skipped an engagement snapshot for sale {sale_id} that is older than the last one sent."
     if _is_stale(sale_id, captured_at):
-        return stale_note
+        return _skipped(sale_id, stale_note)
     token = _estate_ez().ensure_estate_ez_token()
     if not token:
-        return "Sign in to Estate-Ez to send the engagement snapshot."
+        return _skipped(sale_id, "Sign in to Estate-Ez to send the engagement snapshot.")
     if seller is None or not getattr(seller, "signed_in", False):
-        return "CT Seller is not signed in, so views and watchers were not sent."
+        return _skipped(sale_id, "CT Seller is not signed in, so views and watchers were not sent.")
     if not seller.sale_is_listed(sale_id):
-        return f"Sale {sale_id} is not on this CT Seller login's sales, so no engagement snapshot was sent."
+        return _skipped(
+            sale_id,
+            f"Sale {sale_id} is not on this CT Seller login's sales, so no engagement snapshot was sent.",
+        )
     history, history_report = seller.fetch_sale_history_report(sale_id)
     body, completeness = build_snapshot_payload(
         sale_id,
@@ -365,19 +411,29 @@ def push_sale_snapshot(sale_id: int, snap: Snapshot, seller: Any) -> str:
         include_complete=send_complete_enabled(),
     )
     if not body["items"]:
-        return ""
+        return _skipped(sale_id, "")
     with _sale_lock(sale_id):
         if _is_stale(sale_id, captured_at):
-            return stale_note
+            return _skipped(sale_id, stale_note)
         summary = post_snapshot_body(token, body)
         with _sent_lock:
             _last_sent_at[sale_id] = captured_at
     push = summary.get("push")
     matched = summary.get("matched_lots")
+    sent = summary.get("item_count", len(body["items"]))
     note = (
-        f"Sent {summary.get('item_count', len(body['items']))} lots to Estate-Ez"
+        f"Sent {sent} lots to Estate-Ez"
         f" ({push} Push, {matched} matched to catalog lots)."
     )
     if not completeness.complete:
         note += " Partial: " + "; ".join(completeness.reasons) + "."
-    return note
+    try:
+        count = int(sent)
+    except (TypeError, ValueError):
+        count = len(body["items"])
+    return PushResult(
+        sale_id=sale_id,
+        outcome=SENT if completeness.complete else PARTIAL,
+        message=note,
+        item_count=count,
+    )
