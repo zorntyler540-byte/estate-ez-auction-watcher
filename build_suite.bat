@@ -47,6 +47,13 @@ python -m PyInstaller --noconfirm --clean ^
   --hidden-import sale_watcher.ctbids_client ^
   --hidden-import sale_watcher.seller_client ^
   --hidden-import sale_watcher.export_report ^
+  --hidden-import sale_watcher.estate_ez ^
+  --hidden-import sale_watcher.engagement_sync ^
+  --hidden-import sale_watcher.http_retry ^
+  --hidden-import sale_watcher.secure_store ^
+  --hidden-import sale_watcher.app_logging ^
+  --hidden-import sale_watcher.friendly_errors ^
+  --hidden-import sale_watcher.push_status ^
   --hidden-import report_engine ^
   --hidden-import build_active_sale_report ^
   --hidden-import build_end_of_sale_report ^

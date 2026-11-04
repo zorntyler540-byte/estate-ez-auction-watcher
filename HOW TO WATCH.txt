@@ -42,5 +42,10 @@ NOTES
 - Without sign-in, prices/counts still update; usernames stay blank.
 - If usernames stop appearing, sign in again (token expired).
 - Be kind to CTBids — don't set refresh below ~15 seconds.
+- The bottom bar shows the last sync time and the Estate-Ez push result
+  for the sale you are looking at. Click the push status to see every
+  watched sale's last push time, result, and error.
+- Something not working? Click "Logs" (bottom right) and send the newest
+  watcher.log to support. Passwords, tokens and codes are never written there.
 - This is unofficial (not a CTBids-supported API product). It can
   break if they change their site. For your own sale monitoring only.
