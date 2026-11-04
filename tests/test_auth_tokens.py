@@ -22,7 +22,7 @@ class AtomicWriteTests(TempHomeTestCase):
         src, dst = replace.call_args.args
         self.assertEqual(dst, path)
         self.assertEqual(str(src).rsplit("/", 1)[0], str(path.parent))
-        self.assertEqual(path.read_text(encoding="utf-8"), "abc.def.ghi")
+        self.assertEqual(auth.read_secret(path), "abc.def.ghi")
         self.assertEqual([p.name for p in path.parent.iterdir() if p.name.endswith(".tmp")], [])
 
     def test_failed_replace_keeps_the_old_file_and_cleans_temp(self) -> None:
