@@ -4182,7 +4182,7 @@ class WatcherApp:
                     return
                 seller = result.get("seller") or {}
                 access = str(seller.get("access_token") or "") or None
-                note = (
+                note = str(result.get("message") or "").strip() or (
                     "Estate-Ez signed in. CT Seller session loaded from your account."
                     if access
                     else "Estate-Ez signed in."

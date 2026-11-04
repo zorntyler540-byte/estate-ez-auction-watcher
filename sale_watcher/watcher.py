@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -22,7 +23,9 @@ from seller_client import SellerClient
 try:
     from auth import (
         BuyerMfaRequired,
+        clear_access_token_if,
         clear_saved_password,
+        clear_seller_access_token_if,
         keep_sessions_fresh,
         load_saved_password,
         load_saved_username,
@@ -48,7 +51,9 @@ try:
 except ImportError:  # noqa: BLE001 - package vs script import
     from sale_watcher.auth import (
         BuyerMfaRequired,
+        clear_access_token_if,
         clear_saved_password,
+        clear_seller_access_token_if,
         keep_sessions_fresh,
         load_saved_password,
         load_saved_username,
@@ -217,8 +222,9 @@ class SaleWatcher:
             self.say("Buyer login restored — fetching usernames.")
             return True
 
+        failed = self.client.access_token
         self.client.set_token(None)
-        save_access_token(None)
+        clear_access_token_if(failed)
         msg = "CTBids buyer login expired. Click Buyer sign in if usernames stop updating."
         self.say(msg)
         if self.on_auth_lost:
@@ -245,8 +251,9 @@ class SaleWatcher:
             self.say("Seller login restored — checking unpaid invoices.")
             return True
 
+        failed = self.seller.access_token
         self.seller.set_token(None)
-        save_seller_access_token(None)
+        clear_seller_access_token_if(failed)
         msg = "CT Seller login expired. Click Seller sign in again for unpaid checks."
         self.say(msg)
         if self.on_seller_auth_lost:
@@ -493,7 +500,12 @@ class SaleWatcher:
 
     def poll_once(self) -> tuple[Snapshot, list[BidChange]]:
         self.say(f"Refreshing sale {self.sale_id}...")
-        items = self.client.fetch_sale_items(self.sale_id)
+        fetched, item_report = self.client.fetch_sale_items_report(self.sale_id)
+        captured_at = datetime.now(timezone.utc)
+        if item_report.truncated:
+            self.say(f"CTBids item list came back short: {item_report.describe()} lots.")
+        pending = [it for it in fetched if it.is_pending]
+        items = [it for it in fetched if not it.is_pending]
         # If CTBids briefly returns nothing (or sale just flipped status), keep last snapshot
         if not items and self.latest and self.latest.items:
             self.say("Sale list empty this pass — keeping last totals / sold lots.")
@@ -657,7 +669,13 @@ class SaleWatcher:
                 frozen["reserve_price"] = max(it.reserve_price, float(frozen.get("reserve_price") or 0))
                 frozen["item_status"] = it.item_status
 
-        snap = build_snapshot(self.sale_id, items)
+        snap = build_snapshot(
+            self.sale_id,
+            items,
+            captured_at=captured_at,
+            pending_items=pending,
+            item_report=item_report,
+        )
         with self._lock:
             prev = self.latest
             changes = diff_snapshots(prev, snap)

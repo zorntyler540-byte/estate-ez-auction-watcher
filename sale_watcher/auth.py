@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -40,6 +42,12 @@ _JS_READ_TOKENS = """() => ({
 _buyer_profile_lock = threading.Lock()
 _seller_profile_lock = threading.Lock()
 _password_login_blocked_until: dict[str, float] = {}
+_secret_io_lock = threading.Lock()
+# One refresh / login / mint per kind at a time; waiters re-read the saved pair.
+_ensure_locks: dict[str, threading.RLock] = {
+    "buyer": threading.RLock(),
+    "seller": threading.RLock(),
+}
 
 
 def watcher_data_dir() -> Path:
@@ -76,14 +84,48 @@ def seller_refresh_token_path() -> Path:
     return watcher_data_dir() / "seller_refresh_token.txt"
 
 
-def _write_secret(path: Path, value: str | None) -> None:
-    if value:
-        path.write_text(value.strip(), encoding="utf-8")
-    elif path.exists():
-        path.unlink()
+def _replace_file(src: str, dst: Path) -> None:
+    # Windows refuses to replace a file another thread/process has open for a moment.
+    for attempt in range(6):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
-def _read_secret(path: Path) -> str | None:
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write via a temp file in the same folder + os.replace, so readers never see half a token."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        _replace_file(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def write_secret(path: Path, value: str | None) -> None:
+    with _secret_io_lock:
+        if value and value.strip():
+            atomic_write_text(path, value.strip())
+        else:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def read_secret(path: Path) -> str | None:
     if not path.exists():
         return None
     try:
@@ -92,36 +134,60 @@ def _read_secret(path: Path) -> str | None:
         return None
 
 
+def clear_secret_if_matches(path: Path, failed: str | None) -> bool:
+    """Delete ``path`` only if it still holds ``failed``. Another thread may have saved a newer token."""
+    failed = (failed or "").strip()
+    if not failed:
+        return False
+    with _secret_io_lock:
+        if read_secret(path) != failed:
+            return False
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return False
+        return True
+
+
+
 def save_access_token(token: str | None) -> None:
-    _write_secret(token_path(), token)
+    write_secret(token_path(), token)
+
+
+def clear_access_token_if(failed: str | None) -> bool:
+    return clear_secret_if_matches(token_path(), failed)
 
 
 def load_saved_access_token() -> str | None:
-    return _read_secret(token_path())
+    return read_secret(token_path())
 
 
 def save_refresh_token(token: str | None) -> None:
-    _write_secret(refresh_token_path(), token)
+    write_secret(refresh_token_path(), token)
 
 
 def load_saved_refresh_token() -> str | None:
-    return _read_secret(refresh_token_path())
+    return read_secret(refresh_token_path())
 
 
 def save_seller_access_token(token: str | None) -> None:
-    _write_secret(seller_token_path(), token)
+    write_secret(seller_token_path(), token)
+
+
+def clear_seller_access_token_if(failed: str | None) -> bool:
+    return clear_secret_if_matches(seller_token_path(), failed)
 
 
 def load_saved_seller_access_token() -> str | None:
-    return _read_secret(seller_token_path())
+    return read_secret(seller_token_path())
 
 
 def save_seller_refresh_token(token: str | None) -> None:
-    _write_secret(seller_refresh_token_path(), token)
+    write_secret(seller_refresh_token_path(), token)
 
 
 def load_saved_seller_refresh_token() -> str | None:
-    return _read_secret(seller_refresh_token_path())
+    return read_secret(seller_refresh_token_path())
 
 
 def jwt_exp(token: str | None) -> int | None:
@@ -715,11 +781,11 @@ def _save_pair(kind: str, access: str | None, refresh: str | None) -> None:
             save_refresh_token(refresh)
 
 
-def _clear_access_only(kind: str) -> None:
+def _clear_access_only(kind: str, failed: str | None) -> None:
     if kind == "seller":
-        save_seller_access_token(None)
+        clear_seller_access_token_if(failed)
     else:
-        save_access_token(None)
+        clear_access_token_if(failed)
 
 
 def _load_saved_pair(kind: str) -> tuple[str | None, str | None]:
@@ -734,7 +800,21 @@ def _ensure_kind(
     validate: bool = True,
     allow_browser: bool = True,
 ) -> str | None:
+    lock = _ensure_locks.get(kind)
+    if lock is None:
+        return _ensure_kind_locked(kind, validate=validate, allow_browser=allow_browser)
+    with lock:
+        return _ensure_kind_locked(kind, validate=validate, allow_browser=allow_browser)
+
+
+def _ensure_kind_locked(
+    kind: str,
+    *,
+    validate: bool,
+    allow_browser: bool,
+) -> str | None:
     access, refresh = _load_saved_pair(kind)
+    rejected: set[str] = set()
 
     if access and not jwt_needs_refresh(access):
         if not validate:
@@ -744,7 +824,7 @@ def _ensure_kind(
             return access
         if status == "unknown":
             return access  # keep green through a network blip
-        # unauthorized — fall through to refresh
+        rejected.add(access)
 
     if refresh:
         fresh = _http_refresh(kind, refresh)
@@ -755,6 +835,7 @@ def _ensure_kind(
             status = _status_ok(kind, fresh)
             if status in ("ok", "unknown"):
                 return fresh
+            rejected.add(fresh)
 
     saved_login = login_from_saved(kind)
     if saved_login:
@@ -763,6 +844,7 @@ def _ensure_kind(
         status = _status_ok(kind, saved_login)
         if status in ("ok", "unknown"):
             return saved_login
+        rejected.add(saved_login)
 
     if kind == "seller":
         try:
@@ -770,7 +852,7 @@ def _ensure_kind(
         except ImportError:
             from sale_watcher.estate_ez import pull_seller_from_estate_ez
         try:
-            ee_access = pull_seller_from_estate_ez()
+            ee_access = pull_seller_from_estate_ez(rejected=frozenset(rejected))
         except Exception:
             ee_access = None
         if ee_access:
@@ -779,6 +861,7 @@ def _ensure_kind(
             status = _status_ok(kind, ee_access)
             if status in ("ok", "unknown"):
                 return ee_access
+            rejected.add(ee_access)
 
     if allow_browser:
         try:
@@ -805,12 +888,13 @@ def _ensure_kind(
             status = _status_ok(kind, access)
             if status in ("ok", "unknown"):
                 return access
+            rejected.add(access)
 
     # Access is dead; keep the refresh cookie/file so the next attempt can recover.
     if access:
-        status = _status_ok(kind, access)
+        status = "unauthorized" if access in rejected else _status_ok(kind, access)
         if status == "unauthorized":
-            _clear_access_only(kind)
+            _clear_access_only(kind, access)
     return None
 
 
@@ -901,7 +985,7 @@ def open_login_window(
                 status = CtbidsClient(access).token_status()
         if status != "unauthorized":
             return access
-        save_access_token(None)
+        clear_access_token_if(access)
         return None
     return None
 
@@ -942,6 +1026,6 @@ def open_seller_login_window(on_tokens: Callable[[str], None] | None = None) -> 
                 status = SellerClient(access).token_status()
         if status != "unauthorized":
             return access
-        save_seller_access_token(None)
+        clear_seller_access_token_if(access)
         return None
     return None

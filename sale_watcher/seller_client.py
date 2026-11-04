@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
 import requests
+
+try:
+    from ctbids_client import FetchReport, finish_report, page_total
+except ImportError:  # noqa: BLE001 - package vs script import
+    from sale_watcher.ctbids_client import FetchReport, finish_report, page_total
 
 SELLER_API = "https://seller.ctbids.com/services/api/v1"
 SELLER_SITE = "https://seller.ctbids.com"
@@ -108,6 +114,7 @@ class SellerClient:
             self.session.headers.pop("Authorization", None)
         self._connected_buyer_token = None
         self._owned_location_ids = None
+        self._listed_sale_ids: tuple[float, set[int]] | None = None
 
     @property
     def signed_in(self) -> bool:
@@ -390,14 +397,22 @@ class SellerClient:
 
     def fetch_sale_history_items(self, sale_id: int) -> list[dict[str, Any]]:
         """Lots on one sale from the same report CT Seller's sale-history CSV uses."""
+        rows, _report = self.fetch_sale_history_report(sale_id)
+        return rows
+
+    def fetch_sale_history_report(
+        self,
+        sale_id: int,
+        max_pages: int = 80,
+    ) -> tuple[list[dict[str, Any]], FetchReport]:
+        """Sale-history rows plus expected vs fetched counts and whether paging was cut off."""
         if not self.access_token:
             raise PermissionError("CT Seller login expired or missing. Sign in to Seller again.")
         rows: list[dict[str, Any]] = []
+        report = FetchReport()
         next_key = ""
-        guard = 0
-        total = None
-        while guard < 80:
-            guard += 1
+        more_pages = True
+        for _ in range(max_pages):
             page: dict[str, Any] = {"size": 200}
             if next_key:
                 page["next"] = next_key
@@ -417,25 +432,31 @@ class SellerClient:
                 raise PermissionError("CT Seller login expired or missing. Sign in to Seller again.")
             resp.raise_for_status()
             payload = resp.json() if resp.content else {}
+            report.pages += 1
+            page_info = payload.get("page") if isinstance(payload.get("page"), dict) else {}
+            total = page_total(page_info)
+            if total:
+                report.expected = max(report.expected or 0, total)
             batch = payload.get("data") or []
             if not isinstance(batch, list) or not batch:
+                more_pages = False
                 break
             for row in batch:
                 if isinstance(row, dict):
                     rows.append(row)
-            page_info = payload.get("page") if isinstance(payload.get("page"), dict) else {}
-            try:
-                total = int(page_info.get("total") or 0) or total
-            except (TypeError, ValueError):
-                pass
-            if total is not None and len(rows) >= total:
+                    if str(row.get("itemstatus") or "").strip().lower() == "pending":
+                        report.pending += 1
+            if report.expected is not None and len(rows) >= report.expected:
+                more_pages = False
                 break
             keyset = page_info.get("keyset") if isinstance(page_info.get("keyset"), dict) else {}
             nxt = str(keyset.get("next") or page_info.get("next") or "").strip()
             if not nxt or nxt == next_key:
+                more_pages = False
                 break
             next_key = nxt
-        return rows
+        report.fetched = len(rows)
+        return rows, finish_report(report, more_pages=more_pages)
 
     def fetch_all_sale_history_items(
         self,
@@ -475,6 +496,26 @@ class SellerClient:
     def owned_sale_ids(self) -> set[int]:
         """Sale ids that belong to this Seller login — never another franchise."""
         return {sale.sale_id for sale in self.list_sales()}
+
+    def listed_sale_ids(self, *, max_age: float = 300.0, force: bool = False) -> set[int]:
+        """``owned_sale_ids`` cached for ``max_age`` seconds (one list_sales per poll is wasteful)."""
+        cached = self._listed_sale_ids
+        if not force and cached is not None and time.monotonic() - cached[0] < max_age:
+            return set(cached[1])
+        ids = self.owned_sale_ids()
+        self._listed_sale_ids = (time.monotonic(), ids)
+        return set(ids)
+
+    def sale_is_listed(self, sale_id: int) -> bool:
+        """True only if ``sale_id`` is on this Seller login's list_sales().
+
+        A miss re-lists if the cache is over a minute old, so a sale created
+        mid-run shows up without listing on every poll.
+        """
+        sid = int(sale_id)
+        if sid in self.listed_sale_ids():
+            return True
+        return sid in self.listed_sale_ids(max_age=60.0)
 
     def require_owned_locations(self) -> list[tuple[int, str]]:
         """Locations on this Seller token only. Empty list is a hard stop."""
