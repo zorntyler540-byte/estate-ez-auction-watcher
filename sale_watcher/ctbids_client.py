@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -42,6 +43,10 @@ class LiveItem:
     @property
     def is_open(self) -> bool:
         return (self.item_status or "Ready").strip().lower() == "ready"
+
+    @property
+    def is_pending(self) -> bool:
+        return (self.item_status or "").strip().lower() == "pending"
 
     @property
     def is_sold(self) -> bool:
@@ -140,6 +145,57 @@ class BidChange:
 
 
 @dataclass
+class FetchReport:
+    """How much of a paged CTBids / CT Seller list actually came back."""
+
+    expected: int | None = None  # server-reported total; None when it never said
+    fetched: int = 0
+    truncated: bool = False
+    pending: int = 0  # photo-pending lots in the result (kept, not dropped)
+    pages: int = 0
+
+    @property
+    def full(self) -> bool:
+        return (
+            not self.truncated
+            and self.expected is not None
+            and self.fetched >= self.expected
+        )
+
+    def describe(self) -> str:
+        total = "?" if self.expected is None else str(self.expected)
+        text = f"{self.fetched} of {total}"
+        if self.truncated:
+            text += " (cut off)"
+        if self.pending:
+            text += f", {self.pending} pending"
+        return text
+
+
+def page_total(page_info: Any) -> int | None:
+    if not isinstance(page_info, dict):
+        return None
+    raw = page_info.get("total")
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return max(0, int(float(raw)))
+    except (TypeError, ValueError):
+        return None
+
+
+def finish_report(report: FetchReport, *, more_pages: bool) -> FetchReport:
+    """Mark a fetch truncated when we stopped early or got fewer rows than the server's total."""
+    if report.expected == 0 and report.fetched > 0:
+        report.expected = None  # a 0 total next to real rows means "not reported"
+    if more_pages:
+        report.truncated = True
+    if report.expected is not None and report.fetched < report.expected:
+        report.truncated = True
+    return report
+
+
+@dataclass
 class Snapshot:
     sale_id: int
     items: dict[int, LiveItem] = field(default_factory=dict)
@@ -148,6 +204,11 @@ class Snapshot:
     open_count: int = 0
     sold_count: int = 0
     unique_bidders: int = 0
+    # Set when the item list came back, so a slow push can't overwrite a newer one.
+    captured_at: datetime | None = None
+    # Photo-pending lots: off the live board, still sent to Estate-Ez.
+    pending_items: dict[int, LiveItem] = field(default_factory=dict)
+    item_report: FetchReport | None = None
 
 
 def parse_sale_id(sale_url_or_id: str) -> int:
@@ -213,12 +274,23 @@ class CtbidsClient:
         return bool(self.access_token)
 
     def fetch_sale_items(self, sale_id: int, page_size: int = 100) -> list[LiveItem]:
-        """Paginate sale items — includes Ready (live) and Sold (final price)."""
+        """Live-board lots (Ready / Sold / Not Sold). Pending drafts are left out."""
+        items, _report = self.fetch_sale_items_report(sale_id, page_size=page_size)
+        return [it for it in items if not it.is_pending]
+
+    def fetch_sale_items_report(
+        self,
+        sale_id: int,
+        page_size: int = 100,
+        max_pages: int = 40,
+    ) -> tuple[list[LiveItem], FetchReport]:
+        """Paginate sale items, pending lots included, and report expected vs fetched."""
         items: list[LiveItem] = []
+        seen: set[int] = set()
+        report = FetchReport()
         next_key: str | None = None
-        guard = 0
-        while guard < 40:
-            guard += 1
+        more_pages = True
+        for _ in range(max_pages):
             page: dict[str, Any] = {"size": page_size}
             if next_key:
                 page["next"] = next_key
@@ -249,15 +321,26 @@ class CtbidsClient:
             payload = resp.json()
             if payload.get("status") != "success":
                 raise RuntimeError(payload.get("message") or "Item list request failed")
+            report.pages += 1
+            page_info = payload.get("page") if isinstance(payload.get("page"), dict) else {}
+            total = page_total(page_info)
+            if total is not None:
+                report.expected = max(report.expected or 0, total)
             batch = payload.get("data") or []
             if not batch:
+                more_pages = False
                 break
             for row in batch:
-                status = str(row.get("itemstatus") or "Ready").strip()
-                # Skip photo-pending drafts; keep Ready / Sold / Not Sold
-                if status.lower() == "pending":
+                if not isinstance(row, dict):
                     continue
-                item_id = int(row["id"])
+                try:
+                    item_id = int(row["id"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if item_id in seen:
+                    continue
+                seen.add(item_id)
+                status = str(row.get("itemstatus") or "Ready").strip() or "Ready"
                 live = LiveItem(
                     item_id=item_id,
                     title=str(row.get("title") or "").strip(),
@@ -266,21 +349,24 @@ class CtbidsClient:
                     close_time=str(row.get("itemclosetime") or "").strip(),
                     seo_url=str(row.get("itemseourl") or "").strip(),
                     thumbnail=str(row.get("thumbnailurl") or "").strip(),
-                    item_status=status or "Ready",
+                    item_status=status,
                     reserve_price=_row_money(row, "reserveprice", "reservePrice"),
                 )
                 live.link = item_link(sale_id, live)
+                if live.is_pending:
+                    report.pending += 1
                 items.append(live)
-            total = int((payload.get("page") or {}).get("total") or 0)
-            next_key = ((payload.get("page") or {}).get("keyset") or {}).get("next")
-            if not next_key or len(items) >= total:
+            keyset = page_info.get("keyset") if isinstance(page_info.get("keyset"), dict) else {}
+            next_key = keyset.get("next")
+            if (
+                not next_key
+                or (report.expected is not None and len(items) >= report.expected)
+                or len(batch) < page_size
+            ):
+                more_pages = False
                 break
-            if len(batch) < page_size:
-                break
-        seen: dict[int, LiveItem] = {}
-        for it in items:
-            seen.setdefault(it.item_id, it)
-        return list(seen.values())
+        report.fetched = len(items)
+        return items, finish_report(report, more_pages=more_pages)
 
     def fetch_current_bids(self, item_ids: list[int]) -> dict[int, dict[str, Any]]:
         """Public current-bid endpoint (price + count, no usernames)."""
@@ -439,7 +525,14 @@ def merge_bids(items: list[LiveItem], bids: dict[int, dict[str, Any]]) -> list[L
     return items
 
 
-def build_snapshot(sale_id: int, items: list[LiveItem]) -> Snapshot:
+def build_snapshot(
+    sale_id: int,
+    items: list[LiveItem],
+    *,
+    captured_at: datetime | None = None,
+    pending_items: list[LiveItem] | None = None,
+    item_report: FetchReport | None = None,
+) -> Snapshot:
     by_id = {it.item_id: it for it in items}
     with_bids = [it for it in items if it.has_bids]
     live_bidding = [it for it in with_bids if it.is_open]
@@ -455,6 +548,9 @@ def build_snapshot(sale_id: int, items: list[LiveItem]) -> Snapshot:
         open_count=len(open_lots),
         sold_count=len(sold),
         unique_bidders=len(bidders),
+        captured_at=captured_at,
+        pending_items={it.item_id: it for it in pending_items or []},
+        item_report=item_report,
     )
 
 

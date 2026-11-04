@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -499,7 +500,12 @@ class SaleWatcher:
 
     def poll_once(self) -> tuple[Snapshot, list[BidChange]]:
         self.say(f"Refreshing sale {self.sale_id}...")
-        items = self.client.fetch_sale_items(self.sale_id)
+        fetched, item_report = self.client.fetch_sale_items_report(self.sale_id)
+        captured_at = datetime.now(timezone.utc)
+        if item_report.truncated:
+            self.say(f"CTBids item list came back short: {item_report.describe()} lots.")
+        pending = [it for it in fetched if it.is_pending]
+        items = [it for it in fetched if not it.is_pending]
         # If CTBids briefly returns nothing (or sale just flipped status), keep last snapshot
         if not items and self.latest and self.latest.items:
             self.say("Sale list empty this pass — keeping last totals / sold lots.")
@@ -663,7 +669,13 @@ class SaleWatcher:
                 frozen["reserve_price"] = max(it.reserve_price, float(frozen.get("reserve_price") or 0))
                 frozen["item_status"] = it.item_status
 
-        snap = build_snapshot(self.sale_id, items)
+        snap = build_snapshot(
+            self.sale_id,
+            items,
+            captured_at=captured_at,
+            pending_items=pending,
+            item_report=item_report,
+        )
         with self._lock:
             prev = self.latest
             changes = diff_snapshots(prev, snap)
