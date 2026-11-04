@@ -22,7 +22,9 @@ from seller_client import SellerClient
 try:
     from auth import (
         BuyerMfaRequired,
+        clear_access_token_if,
         clear_saved_password,
+        clear_seller_access_token_if,
         keep_sessions_fresh,
         load_saved_password,
         load_saved_username,
@@ -48,7 +50,9 @@ try:
 except ImportError:  # noqa: BLE001 - package vs script import
     from sale_watcher.auth import (
         BuyerMfaRequired,
+        clear_access_token_if,
         clear_saved_password,
+        clear_seller_access_token_if,
         keep_sessions_fresh,
         load_saved_password,
         load_saved_username,
@@ -217,8 +221,9 @@ class SaleWatcher:
             self.say("Buyer login restored — fetching usernames.")
             return True
 
+        failed = self.client.access_token
         self.client.set_token(None)
-        save_access_token(None)
+        clear_access_token_if(failed)
         msg = "CTBids buyer login expired. Click Buyer sign in if usernames stop updating."
         self.say(msg)
         if self.on_auth_lost:
@@ -245,8 +250,9 @@ class SaleWatcher:
             self.say("Seller login restored — checking unpaid invoices.")
             return True
 
+        failed = self.seller.access_token
         self.seller.set_token(None)
-        save_seller_access_token(None)
+        clear_seller_access_token_if(failed)
         msg = "CT Seller login expired. Click Seller sign in again for unpaid checks."
         self.say(msg)
         if self.on_seller_auth_lost:
