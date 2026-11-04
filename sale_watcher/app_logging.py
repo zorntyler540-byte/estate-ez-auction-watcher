@@ -32,10 +32,12 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*"), REDACTED),
     # Authorization schemes followed by a credential.
     (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 " + REDACTED),
-    # key=value, key: value, "key": "value", ?key=value&...
+    # key=value, key: value, "key": "value", ?key=value&...  A key that ends a URL path
+    # ("/auth/token: HTTP 503") is not a field, and an already-masked value is left alone.
     (
         re.compile(
-            r"(?i)([\"']?\b(?:" + _SECRET_KEYS + r")\b[\"']?\s*[:=]\s*)([\"']?)([^\"'\s,;&}\]]+)"
+            r"(?i)(?<![/\w.-])([\"']?\b(?:" + _SECRET_KEYS + r")\b[\"']?\s*[:=]\s*)([\"']?)"
+            r"(?!" + re.escape(REDACTED) + r")([^\"'\s,;&}\]]+)"
         ),
         r"\1\2" + REDACTED,
     ),

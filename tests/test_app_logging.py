@@ -52,8 +52,14 @@ class RedactTests(unittest.TestCase):
             "OK — 42 lots, hammer $1,234.00",
             "HTTP 503; retry 1 of 2 in 0.6s",
             "Estate-Ez push sent 2:31:05 PM · 42 lots",
+            "seller sign in POST seller.ctbids.com/services/api/v1/auth/token: HTTP 503; retry 1 of 2",
         ):
             self.assertEqual(redact(text), text)
+
+    def test_masking_is_clean_when_patterns_overlap(self) -> None:
+        self.assertEqual(redact(f"login ok, token={JWT}"), f"login ok, token={REDACTED}")
+        self.assertEqual(redact(f'{{"accessToken": "{JWT}"}}'), f'{{"accessToken": "{REDACTED}"}}')
+        self.assertEqual(redact(redact("password=hunter2")), f"password={REDACTED}")
 
     def test_filter_redacts_args_and_exception_text(self) -> None:
         record = logging.LogRecord(
