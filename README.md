@@ -2,7 +2,7 @@
 
 Windows desktop app for Caring Transitions / CTBids franchises: **Live Watch**, **At risk**, and **Reports**.
 
-This repo is the Watcher / Sale Suite only. It is **not** the Estate-Ez cataloging website (`CaringTransitions_AI`). It **does** work with Estate-Ez: staff sign in with the same Estate-Ez account, Watcher can load the CT Seller session from that account, and after each refresh it can send a PII-free engagement snapshot (SKU, views, watchers, price — no bidder names or invoices) to Estate-Ez.
+This repo is the Watcher / Sale Suite only. It is **not** the Estate-Ez cataloging website (`CaringTransitions_AI`). It **does** work with Estate-Ez: staff sign in with the same Estate-Ez account, Watcher can load the CT Seller session from that account, and after each refresh it sends a PII-free engagement snapshot (SKU, views, watchers, price — no bidder names or invoices) to Estate-Ez, including a `complete` flag when CT Seller data is fully fetched. Set `ESTATE_EZ_SEND_COMPLETE=0` or `"engagement_send_complete": false` in `%LOCALAPPDATA%\\SaleWatcher\\watcher_config.json` to omit that field (for older Estate-Ez servers).
 
 ## Run from source
 

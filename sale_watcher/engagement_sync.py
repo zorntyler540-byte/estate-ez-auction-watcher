@@ -28,8 +28,7 @@ def _estate_ez():
 
 TIMEOUT = 45
 
-# Server builds before the `complete` field reject unknown keys (extra=forbid),
-# so it is only sent when one of these is turned on.
+# The `complete` field can be turned off for older Estate-Ez servers (extra=forbid).
 SEND_COMPLETE_ENV = "ESTATE_EZ_SEND_COMPLETE"
 SEND_COMPLETE_CONFIG_KEY = "engagement_send_complete"
 
@@ -82,15 +81,17 @@ def _truthy(value: Any) -> bool:
 
 
 def send_complete_enabled() -> bool:
-    """Off unless ESTATE_EZ_SEND_COMPLETE or watcher_config.json turns it on."""
+    """On by default; ESTATE_EZ_SEND_COMPLETE or watcher_config.json can turn it off."""
     env = os.environ.get(SEND_COMPLETE_ENV)
     if env is not None and env.strip():
         return _truthy(env)
     try:
         cfg = _estate_ez().watcher_config()
     except Exception:  # noqa: BLE001 - a bad config file must not stop Live Watch
-        return False
-    return _truthy(cfg.get(SEND_COMPLETE_CONFIG_KEY))
+        return True
+    if SEND_COMPLETE_CONFIG_KEY in cfg:
+        return _truthy(cfg[SEND_COMPLETE_CONFIG_KEY])
+    return True
 
 
 def _count(value: Any) -> int | None:
