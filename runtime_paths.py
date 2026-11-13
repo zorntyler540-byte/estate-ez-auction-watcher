@@ -6,6 +6,44 @@ import sys
 from pathlib import Path
 
 
+def macos_distribution_dir() -> Path | None:
+    """Folder that contains the ``.app`` when this is a frozen Mac build.
+
+    Staff edit ``config.json`` in that folder. Inside the bundle the executable
+    lives at ``Name.app/Contents/MacOS/Name``.
+    """
+    if sys.platform != "darwin" or not getattr(sys, "frozen", False):
+        return None
+    exe = Path(sys.executable).resolve()
+    macos_dir = exe.parent
+    contents = macos_dir.parent
+    bundle = contents.parent
+    if macos_dir.name == "MacOS" and contents.name == "Contents" and bundle.suffix == ".app":
+        return bundle.parent
+    return None
+
+
+def mac_browser_candidates() -> list[Path]:
+    """Chrome, Edge, and a Chromium bundled next to a frozen Mac build."""
+    if sys.platform != "darwin":
+        return []
+    found = [
+        Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+        Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        Path.home() / "Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    ]
+    roots = [app_base_dir() / "ms-playwright"]
+    outside = macos_distribution_dir()
+    if outside is not None:
+        roots.append(outside / "ms-playwright")
+    for root in roots:
+        if not root.is_dir():
+            continue
+        found.extend(root.glob("chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium"))
+    return found
+
+
 def app_base_dir() -> Path:
     """Folder that holds the .exe (frozen) or this project (source)."""
     if getattr(sys, "frozen", False):

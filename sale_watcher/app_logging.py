@@ -1,4 +1,6 @@
-"""Rotating log files under %LOCALAPPDATA%\\SaleWatcher\\logs, with secrets redacted.
+"""Rotating log files under the per-user SaleWatcher folder, with secrets redacted.
+
+Windows: ``%LOCALAPPDATA%\\SaleWatcher\\logs``. Mac: ``~/Library/Application Support/SaleWatcher/logs``.
 
 Every handler gets ``RedactionFilter`` so JWTs, bearer tokens, passwords and
 one-time codes never reach disk, even inside exception text.
@@ -96,8 +98,9 @@ DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def log_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    return Path(base) / "SaleWatcher" / "logs"
+    from paths import support_dir
+
+    return support_dir() / "logs"
 
 
 def log_file() -> Path:

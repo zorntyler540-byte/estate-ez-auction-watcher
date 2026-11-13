@@ -113,6 +113,9 @@ def find_browser() -> Path | None:
     if local:
         candidates.append(Path(local) / "Google" / "Chrome" / "Application" / "chrome.exe")
         candidates.append(Path(local) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
+    from runtime_paths import mac_browser_candidates
+
+    candidates.extend(mac_browser_candidates())
     for path in candidates:
         if path.exists():
             return path

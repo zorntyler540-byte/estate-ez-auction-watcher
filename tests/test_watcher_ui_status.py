@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-import tkinter as tk
 import unittest
 from datetime import datetime, timedelta, timezone
+
+try:
+    import tkinter as tk
+except ModuleNotFoundError:
+    tk = None  # type: ignore[assignment]
 
 from watcher_test_support import TempHomeTestCase
 
@@ -14,6 +18,8 @@ A, B = 47921, 48010
 
 
 def _tk_available() -> bool:
+    if tk is None:
+        return False
     try:
         root = tk.Tk()
     except tk.TclError:

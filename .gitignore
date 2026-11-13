@@ -2,6 +2,7 @@
 dist/
 build/
 *.zip
+.playwright-browsers/
 
 # Local env — copy .env.example to .env; never commit secrets
 .env
