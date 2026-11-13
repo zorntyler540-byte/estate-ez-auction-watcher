@@ -33,6 +33,8 @@ fi
 echo "=== Bundling Chromium and the franchise config ==="
 rm -rf "$MACOS/ms-playwright"
 cp -R "$BROWSERS" "$MACOS/ms-playwright"
+# Playwright's .links directory is a symlink farm. codesign rejects it.
+rm -rf "$MACOS/ms-playwright/.links"
 cp config.franchise.json "$MACOS/config.json"
 
 rm -rf "$STAGE"
