@@ -43,7 +43,7 @@ chmod +x build_mac.sh
 ./build_mac.sh
 ```
 
-The zip is `dist/Estate-Ez-Auction-Watcher-mac.zip`. It contains the `.app`, `config.json`, and `Open Auction Watcher.command`. The GitHub run is Apple silicon. Do not commit the zip.
+A local run also writes `dist/Estate-Ez-Auction-Watcher-mac.zip`. The GitHub Actions artifact is the folder itself (app, config, and `Open Auction Watcher.command`) so the client unzips once. The GitHub run is Apple silicon. Do not commit the zip.
 
 ## License
 

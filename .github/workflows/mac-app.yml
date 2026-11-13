@@ -33,5 +33,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Estate-Ez-Auction-Watcher-mac
-          path: dist/Estate-Ez-Auction-Watcher-mac.zip
+          path: dist/Estate-Ez Auction Watcher
           if-no-files-found: error
