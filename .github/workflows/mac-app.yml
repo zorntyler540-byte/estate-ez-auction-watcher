@@ -1,0 +1,37 @@
+name: Mac app
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "cursor/**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install and test
+        run: |
+          python -m pip install -r requirements.txt pytest
+          python -m pytest -q
+
+  build-mac:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the Mac app
+        run: chmod +x build_mac.sh "Open Auction Watcher.command" && ./build_mac.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Estate-Ez-Auction-Watcher-mac
+          path: dist/Estate-Ez-Auction-Watcher-mac.zip
+          if-no-files-found: error

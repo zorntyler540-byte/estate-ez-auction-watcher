@@ -64,7 +64,9 @@ _ensure_locks: dict[str, threading.RLock] = {
 
 
 def watcher_data_dir() -> Path:
-    base = Path.home() / "AppData" / "Local" / "SaleWatcher"
+    from paths import support_dir
+
+    base = support_dir()
     base.mkdir(parents=True, exist_ok=True)
     return base
 

@@ -1,0 +1,47 @@
+ESTATE-EZ AUCTION WATCHER — MAC
+================================
+
+This is the Mac copy of the same program Windows franchises use:
+Live Watch during a sale, At risk, and end-of-sale client reports.
+
+It runs on Apple silicon Macs (M1, M2, M3, M4, and newer).
+An Intel Mac cannot open this build.
+
+INSTALL
+-------
+1. Download Estate-Ez-Auction-Watcher-mac.zip.
+2. Double-click the zip. macOS extracts a folder named
+   "Estate-Ez Auction Watcher".
+3. Move that folder somewhere you will keep it, such as Documents.
+   Do not pull the app out of the folder. It needs config.json
+   and Open Auction Watcher.command beside it.
+4. Double-click "Open Auction Watcher.command".
+
+If macOS says it cannot be opened or the app is damaged:
+   Right-click "Open Auction Watcher.command" → Open → Open.
+   That clears the download block and starts the Watcher.
+
+FIRST OPEN
+----------
+1. Edit config.json in this same folder:
+     "business_name": "Caring Transitions Your City"
+   Leave "prefixes" as {} unless you use fixed SKU client codes.
+
+2. In the Watcher, sign in with the Estate-Ez account.
+   Remember password is saved in this Mac's Keychain, not in the zip.
+
+3. Buyer sign in is the franchise ctbids.com account.
+   Seller sign in is the franchise seller.ctbids.com account.
+   If CTBids asks for an email or text code, click "Use browser instead",
+   finish the code in that window, then close it.
+
+LOGINS stay on this Mac only
+(Keychain + ~/Library/Application Support/SaleWatcher).
+
+UPDATES
+-------
+When a new zip arrives, replace the whole folder.
+Copy your business_name from the old config.json into the new one
+if you changed it. Sign-in stays in the Keychain and carries over.
+
+Estate-Ez Auction Watcher · © 2026 Zortron Tech Solutions

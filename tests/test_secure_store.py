@@ -149,9 +149,10 @@ class EncryptedTokenTests(FakeDpapiTestCase):
 class NonWindowsFallbackTests(TempHomeTestCase):
     def setUp(self) -> None:
         super().setUp()
-        patcher = mock.patch.object(secure_store, "dpapi_available", return_value=False)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for name in ("dpapi_available", "keychain_available"):
+            patcher = mock.patch.object(secure_store, name, return_value=False)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         warned = mock.patch.object(secure_store, "_warned_plaintext", False)
         warned.start()
         self.addCleanup(warned.stop)
@@ -185,10 +186,47 @@ class DpapiAvailabilityTests(unittest.TestCase):
     def test_not_available_off_windows(self) -> None:
         with mock.patch.object(secure_store.sys, "platform", "linux"):
             self.assertFalse(secure_store.dpapi_available())
+            self.assertFalse(secure_store.keychain_available())
             with self.assertRaises(secure_store.SecretStoreError):
                 secure_store.protect(b"x")
             with self.assertRaises(secure_store.SecretStoreError):
                 secure_store.unprotect(b"x")
+
+
+class MacKeychainTests(TempHomeTestCase):
+    """Keychain sealing without calling the real ``security`` tool."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.key = b"k" * 32
+        for name, value in (
+            ("dpapi_available", mock.Mock(return_value=False)),
+            ("keychain_available", mock.Mock(return_value=True)),
+            ("_keychain_key", mock.Mock(return_value=self.key)),
+        ):
+            patcher = mock.patch.object(secure_store, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_password_round_trip_does_not_store_plaintext(self) -> None:
+        auth.save_login_credentials("seller", "franchise@example.com", "hunter2")
+        raw = auth._password_path("seller").read_bytes()
+        self.assertNotIn(b"hunter2", raw)
+        self.assertTrue(raw.startswith(b"SWKC1\n"))
+        self.assertEqual(auth.load_saved_password("seller"), "hunter2")
+
+    def test_token_file_uses_the_same_header_as_windows(self) -> None:
+        auth.save_seller_access_token(TOKEN)
+        raw = auth.seller_token_path().read_bytes()
+        self.assertTrue(raw.startswith(secure_store.MAGIC))
+        self.assertNotIn(TOKEN.encode(), raw)
+        self.assertEqual(auth.load_saved_seller_access_token(), TOKEN)
+
+    def test_wrong_key_reads_as_signed_out(self) -> None:
+        auth.save_seller_access_token(TOKEN)
+        secure_store._keychain_key.return_value = b"z" * 32
+        with self.assertLogs("sale_watcher.secure_store", logging.WARNING):
+            self.assertIsNone(auth.load_saved_seller_access_token())
 
 
 if __name__ == "__main__":
